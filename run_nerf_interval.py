@@ -11,7 +11,7 @@ from tqdm import tqdm, trange
 
 import matplotlib.pyplot as plt
 
-from run_nerf_helpers import *
+from run_nerf_helpers_interval import *
 
 from load_llff import load_llff_data
 from load_deepvoxels import load_dv_data
@@ -23,33 +23,46 @@ np.random.seed(0)
 DEBUG = False
 
 
-def batchify(fn, chunk):
+def batchify(fn, chunk, epsilon):
     """Constructs a version of 'fn' that applies to smaller batches.
     """
+
+    ##Batchify now outputs mu and epsilon
     if chunk is None:
         return fn
-
     def ret(inputs):
-        return torch.cat([fn(inputs[i:i + chunk]) for i in range(0, inputs.shape[0], chunk)], 0)
-
+        mu = torch.empty(0)
+        eps = torch.empty(0)
+        for i in range(0, inputs.shape[0], chunk):
+            mu_, eps_ = fn(inputs[i:i + chunk], epsilon)
+            mu = torch.cat([mu, mu_], 0)
+            eps = torch.cat([eps, eps_], 0)
+        return mu, eps
     return ret
 
 
-def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024 * 64):
+def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, eps, netchunk=1024 * 64):
+
+    # Added argument eps and now the function outputs mu and epsilon
     """Prepares inputs and applies network 'fn'.
     """
     inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
     embedded = embed_fn(inputs_flat)
 
     if viewdirs is not None:
-        input_dirs = viewdirs[:, None].expand(inputs.shape)
-        input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
-        embedded_dirs = embeddirs_fn(input_dirs_flat)
-        embedded = torch.cat([embedded, embedded_dirs], -1)
+        print(" to do ")
+        # input_dirs = viewdirs[:, None].expand(inputs.shape)
+        # input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
+        # embedded_dirs = embeddirs_fn(input_dirs_flat)
+        # embedded = torch.cat([embedded, embedded_dirs], -1)
 
-    outputs_flat = batchify(fn, netchunk)(embedded)
-    outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])
-    return outputs
+    outputs_flat = batchify(fn, netchunk, eps)(embedded)
+    mu_flat = outputs_flat[0]
+    eps_flat = outputs_flat[0]
+    mu = torch.reshape(mu_flat, list(inputs.shape[:-1]) + [mu_flat.shape[-1]])
+    eps = torch.reshape(eps_flat, list(inputs.shape[:-1]) + [eps_flat.shape[-1]])
+
+    return mu, eps
 
 
 def batchify_rays(rays_flat, chunk=1024 * 32, **kwargs):
@@ -200,7 +213,8 @@ def create_nerf(args):
     network_query_fn = lambda inputs, viewdirs, network_fn: run_network(inputs, viewdirs, network_fn,
                                                                         embed_fn=embed_fn,
                                                                         embeddirs_fn=embeddirs_fn,
-                                                                        netchunk=args.netchunk)
+                                                                        netchunk=args.netchunk,
+                                                                        eps=args.eps) ##Aded epsilon
 
     # Create optimizer
     optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
@@ -381,8 +395,10 @@ def render_rays(ray_batch,
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
     #     raw = run_network(pts)
-    raw = network_query_fn(pts, viewdirs, network_fn)
-    rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
+    # The function now outputs mu and epsilon
+    raw_mu, raw_eps = network_query_fn(pts, viewdirs, network_fn)
+
+    rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                                  pytest=pytest)
 
     if N_importance > 0:
@@ -398,14 +414,14 @@ def render_rays(ray_batch,
 
         run_fn = network_fn if network_fine is None else network_fine
         #         raw = run_network(pts, fn=run_fn)
-        raw = network_query_fn(pts, viewdirs, run_fn)
+        raw_mu_fn, raw_eps_fn = network_query_fn(pts, viewdirs, run_fn)
 
-        rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
+        rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu_fn, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                                      pytest=pytest)
 
     ret = {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map': acc_map}
     if retraw:
-        ret['raw'] = raw
+        ret['raw'] = raw_mu_fn
     if N_importance > 0:
         ret['rgb0'] = rgb_map_0
         ret['disp0'] = disp_map_0
@@ -527,6 +543,10 @@ def config_parser():
                         help='frequency of testset saving')
     parser.add_argument("--i_video", type=int, default=50000,
                         help='frequency of render_poses video saving')
+
+    ### Added eps argument for IntervalNeRF
+    parser.add_argument("--eps", type=float, default=.0,
+                        help=' todo ')
 
     return parser
 
@@ -699,7 +719,7 @@ def train():
     if use_batching:
         rays_rgb = torch.Tensor(rays_rgb).to(device)
 
-    N_iters = 200000 + 1
+    N_iters = 100 + 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
@@ -875,6 +895,6 @@ def train():
 
 
 if __name__ == '__main__':
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
     train()

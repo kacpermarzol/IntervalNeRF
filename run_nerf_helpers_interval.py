@@ -93,31 +93,46 @@ class NeRF(nn.Module):
         else:
             self.output_linear = nn.Linear(W, output_ch)
 
-    def forward(self, x):
+    def forward(self, x, eps=0):
+        ### zmieniono funkcje forward, by dzialala na interwalach
         input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
-        h = input_pts
+        eps = eps * torch.ones_like(input_pts)
+        mu_pts = input_pts
+        mu_pts, eps = mu_pts.T, eps.T
 
-        for i, l in enumerate(self.pts_linears):
-            h = self.pts_linears[i](h)
-            h = F.relu(h)
+        z_l, z_u = mu_pts - eps, mu_pts + eps
+
+        for i, layer in enumerate(self.pts_linears):
+            mu_pts, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
+            mu_pts = layer._parameters["weight"] @ mu_pts + layer._parameters["bias"][:, None]
+            eps = torch.abs(layer._parameters["weight"]) @ eps
             if i in self.skips:
-                h = torch.cat([input_pts, h], -1)
+                mu_pts = torch.cat([input_pts.T, mu_pts], 0)
+                eps = torch.cat([torch.zeros(input_pts.shape[1], eps.shape[-1]), eps], 0)
+            z_l, z_u = mu_pts - eps, mu_pts + eps
+            z_l, z_u = F.relu(z_l), F.relu(z_u)
+
 
         if self.use_viewdirs:
-            alpha = self.alpha_linear(h)
-            feature = self.feature_linear(h)
-            h = torch.cat([feature, input_views], -1)
-
-            for i, l in enumerate(self.views_linears):
-                h = self.views_linears[i](h)
-                h = F.relu(h)
-
-            rgb = self.rgb_linear(h)
-            outputs = torch.cat([rgb, alpha], -1)
+            print(" to do")
+            # alpha = self.alpha_linear(h)
+            # feature = self.feature_linear(h)
+            # h = torch.cat([feature, input_views], -1)
+            #
+            # for i, l in enumerate(self.views_linears):
+            #     h = self.views_linears[i](h)
+            #     h = F.relu(h)
+            #
+            # rgb = self.rgb_linear(h)
+            # outputs = torch.cat([rgb, alpha], -1)
         else:
-            outputs = self.output_linear(h)
+            mu_pts, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
+            mu_pts = self.output_linear._parameters["weight"] @ mu_pts + self.output_linear._parameters["bias"][:, None]
+            eps = torch.abs(self.output_linear._parameters["weight"]) @ eps
 
-        return outputs
+        mu, eps = mu_pts.T, eps.T
+        return mu, eps
+
 
     def load_weights_from_keras(self, weights):
         assert self.use_viewdirs, "Not implemented if use_viewdirs=False"

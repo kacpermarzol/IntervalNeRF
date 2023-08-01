@@ -100,6 +100,9 @@ class NeRF(nn.Module):
             h = self.pts_linears[i](h)
             h = F.relu(h)
             if i in self.skips:
+                print('h shape: ', h.shape)
+                print('input_pts shape: ', input_pts.shape)
+                print(input_pts)
                 h = torch.cat([input_pts, h], -1)
 
         if self.use_viewdirs:
