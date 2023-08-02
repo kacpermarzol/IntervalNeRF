@@ -50,11 +50,10 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, eps, netchunk=1024
     embedded = embed_fn(inputs_flat)
 
     if viewdirs is not None:
-        print(" to do ")
-        # input_dirs = viewdirs[:, None].expand(inputs.shape)
-        # input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
-        # embedded_dirs = embeddirs_fn(input_dirs_flat)
-        # embedded = torch.cat([embedded, embedded_dirs], -1)
+        input_dirs = viewdirs[:, None].expand(inputs.shape)
+        input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
+        embedded_dirs = embeddirs_fn(input_dirs_flat)
+        embedded = torch.cat([embedded, embedded_dirs], -1)
 
     outputs_flat = batchify(fn, netchunk, eps)(embedded)
     mu_flat = outputs_flat[0]
