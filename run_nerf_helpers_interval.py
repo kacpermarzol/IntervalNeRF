@@ -115,36 +115,37 @@ class NeRF(nn.Module):
 
         if self.use_viewdirs:
             # alpha = self.alpha_linear(h)
-            mu_alpha, eps_alpha = (z_u + z_l) / 2, (z_u - z_l) / 2
-            mu_alpha = self.alpha_linear._parameters["weight"] @ mu_alpha + self.alpha_linear._parameters["bias"][:, None]
-            eps_alpha = torch.abs(self.alpha_linear._parameters["weight"]) @ eps_alpha
+            mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
+            mu = self.alpha_linear._parameters["weight"] @ mu + self.alpha_linear._parameters["bias"][:, None]
+            eps = torch.abs(self.alpha_linear._parameters["weight"]) @ eps
+
+            mu_alpha = mu
+            eps_alpha = eps
 
             # feature = self.feature_linear(h)
-            mu_feature, eps_feature = (z_u + z_l) / 2, (z_u - z_l) / 2
-            mu_feature = self.feature_linear._parameters["weight"] @ mu_feature + self.feature_linear._parameters["bias"][:, None]
-            eps_feature = torch.abs(self.feature_linear._parameters["weight"]) @ eps_feature
+            mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
+            mu = self.feature_linear._parameters["weight"] @ mu + self.feature_linear._parameters["bias"][:, None]
+            eps = torch.abs(self.feature_linear._parameters["weight"]) @ eps
 
-            # h = torch.cat([feature, input_views], -1)
-            mu_feature = torch.cat([input_views.T, mu_feature], 0)
-            eps_feature = torch.cat([torch.zeros(input_views.shape[1], eps.shape[-1]), eps_feature], 0)
+            mu = torch.cat([input_views.T, mu], 0)
+            eps = torch.cat([torch.zeros(input_views.shape[1], eps.shape[-1]), eps], 0)
 
-            z_l, z_u = mu_feature - eps_feature, mu_feature + eps_feature # no activation in official code here
+            z_l, z_u = mu - eps, mu + eps # no activation in official code here
 
             for i, layer in enumerate(self.views_linears):
-                mu_feature, eps_feature = (z_u + z_l) / 2, (z_u - z_l) / 2
-                mu_feature = layer._parameters["weight"] @ mu_feature + layer._parameters["bias"][:, None]
-                eps_feature = torch.abs(layer._parameters["weight"]) @ eps_feature
-                z_l, z_u = mu_feature - eps_feature, mu_feature + eps_feature
+                mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
+                mu = layer._parameters["weight"] @ mu + layer._parameters["bias"][:, None]
+                eps = torch.abs(layer._parameters["weight"]) @ eps
+                z_l, z_u = mu - eps, mu + eps
                 z_l, z_u = F.relu(z_l), F.relu(z_u)
 
             # rgb = self.rgb_linear(h)
-            mu_rgb, eps_rgb = (z_u + z_l) / 2, (z_u - z_l) / 2
-            mu_rgb = self.rgb_linear._parameters["weight"] @ mu_rgb + self.rgb_linear._parameters["bias"][:, None]
-            eps_rgb = torch.abs(self.rgb_linear._parameters["weight"]) @ eps_rgb
+            mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
+            mu = self.rgb_linear._parameters["weight"] @ mu + self.rgb_linear._parameters["bias"][:, None]
+            eps = torch.abs(self.rgb_linear._parameters["weight"]) @ eps
 
-            # outputs = torch.cat([rgb, alpha], -1)
-            mu = torch.cat([mu_rgb, mu_alpha], 0)
-            eps = torch.cat([eps_rgb, eps_alpha], 0)
+            mu = torch.cat([mu, mu_alpha], 0)
+            eps = torch.cat([eps, eps_alpha], 0)
 
         else:
             mu_pts, eps = (z_u + z_l) / 2, (z_u - z_l) / 2

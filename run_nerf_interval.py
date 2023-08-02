@@ -31,12 +31,14 @@ def batchify(fn, chunk, epsilon):
     if chunk is None:
         return fn
     def ret(inputs):
-        mu = torch.empty(0)
-        eps = torch.empty(0)
+        mu_list = []
+        eps_list = []
         for i in range(0, inputs.shape[0], chunk):
             mu_, eps_ = fn(inputs[i:i + chunk], epsilon)
-            mu = torch.cat([mu, mu_], 0)
-            eps = torch.cat([eps, eps_], 0)
+            mu_list.append(mu_)
+            eps_list.append(eps_)
+        mu = torch.cat(mu_list, 0)
+        eps = torch.cat(eps_list, 0)
         return mu, eps
     return ret
 
@@ -718,7 +720,7 @@ def train():
     if use_batching:
         rays_rgb = torch.Tensor(rays_rgb).to(device)
 
-    N_iters = 100 + 1
+    N_iters = 200000 + 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
@@ -894,6 +896,6 @@ def train():
 
 
 if __name__ == '__main__':
-    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
     train()
