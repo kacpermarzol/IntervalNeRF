@@ -93,25 +93,23 @@ class NeRF(nn.Module):
         else:
             self.output_linear = nn.Linear(W, output_ch)
 
-    def forward(self, x, eps=0):
-        ### zmieniono funkcje forward, by dzialala na interwalach
+    def forward(self, x, eps=0.0):
         input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
         eps = eps * torch.ones_like(input_pts)
-        mu_pts = input_pts
-        mu_pts, eps = mu_pts.T, eps.T
+        mu = input_pts
+        mu, eps = mu.T, eps.T
 
-        z_l, z_u = mu_pts - eps, mu_pts + eps
+        z_l, z_u = mu - eps, mu + eps
 
         for i, layer in enumerate(self.pts_linears):
-            mu_pts, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
-            mu_pts = layer._parameters["weight"] @ mu_pts + layer._parameters["bias"][:, None]
+            mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
+            mu = layer._parameters["weight"] @ mu + layer._parameters["bias"][:, None]
             eps = torch.abs(layer._parameters["weight"]) @ eps
             if i in self.skips:
-                mu_pts = torch.cat([input_pts.T, mu_pts], 0)
+                mu = torch.cat([input_pts.T, mu], 0)
                 eps = torch.cat([torch.zeros(input_pts.shape[1], eps.shape[-1]), eps], 0)
-            z_l, z_u = mu_pts - eps, mu_pts + eps
+            z_l, z_u = mu - eps, mu + eps
             z_l, z_u = F.relu(z_l), F.relu(z_u)
-
 
         if self.use_viewdirs:
             mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
@@ -121,14 +119,12 @@ class NeRF(nn.Module):
             mu_alpha = mu
             eps_alpha = eps
 
-            # feature = self.feature_linear(h)
             mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
             mu = self.feature_linear._parameters["weight"] @ mu + self.feature_linear._parameters["bias"][:, None]
             eps = torch.abs(self.feature_linear._parameters["weight"]) @ eps
 
             mu = torch.cat([input_views.T, mu], 0)
             eps = torch.cat([torch.zeros(input_views.shape[1], eps.shape[-1]), eps], 0)
-
             z_l, z_u = mu - eps, mu + eps # no activation in official code here
 
             for i, layer in enumerate(self.views_linears):
@@ -138,7 +134,6 @@ class NeRF(nn.Module):
                 z_l, z_u = mu - eps, mu + eps
                 z_l, z_u = F.relu(z_l), F.relu(z_u)
 
-            # rgb = self.rgb_linear(h)
             mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
             mu = self.rgb_linear._parameters["weight"] @ mu + self.rgb_linear._parameters["bias"][:, None]
             eps = torch.abs(self.rgb_linear._parameters["weight"]) @ eps
@@ -147,10 +142,9 @@ class NeRF(nn.Module):
             eps = torch.cat([eps, eps_alpha], 0)
 
         else:
-            mu_pts, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
-            mu_pts = self.output_linear._parameters["weight"] @ mu_pts + self.output_linear._parameters["bias"][:, None]
+            mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
+            mu = self.output_linear._parameters["weight"] @ mu + self.output_linear._parameters["bias"][:, None]
             eps = torch.abs(self.output_linear._parameters["weight"]) @ eps
-            mu = mu_pts
 
         mu, eps = mu.T, eps.T
         return mu, eps

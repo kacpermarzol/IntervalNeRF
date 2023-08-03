@@ -59,7 +59,7 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, eps, netchunk=1024
 
     outputs_flat = batchify(fn, netchunk, eps)(embedded)
     mu_flat = outputs_flat[0]
-    eps_flat = outputs_flat[0]
+    eps_flat = outputs_flat[1]
     mu = torch.reshape(mu_flat, list(inputs.shape[:-1]) + [mu_flat.shape[-1]])
     eps = torch.reshape(eps_flat, list(inputs.shape[:-1]) + [eps_flat.shape[-1]])
 
@@ -410,13 +410,10 @@ def render_rays(ray_batch,
         z_samples = z_samples.detach()
 
         z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
-        pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :,
-                                                            None]  # [N_rays, N_samples + N_importance, 3]
+        pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples + N_importance, 3]
 
         run_fn = network_fn if network_fine is None else network_fine
-        #         raw = run_network(pts, fn=run_fn)
         raw_mu_fn, raw_eps_fn = network_query_fn(pts, viewdirs, run_fn)
-
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu_fn, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                                      pytest=pytest)
 
