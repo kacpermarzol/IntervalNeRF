@@ -114,7 +114,6 @@ class NeRF(nn.Module):
 
 
         if self.use_viewdirs:
-            # alpha = self.alpha_linear(h)
             mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
             mu = self.alpha_linear._parameters["weight"] @ mu + self.alpha_linear._parameters["bias"][:, None]
             eps = torch.abs(self.alpha_linear._parameters["weight"]) @ eps
