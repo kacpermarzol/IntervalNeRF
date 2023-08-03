@@ -43,7 +43,7 @@ def batchify(fn, chunk, epsilon):
     return ret
 
 
-def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, eps, netchunk=1024 * 32):
+def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, eps, netchunk=512 * 32):
 
     # Added argument eps and now the function outputs mu and epsilon
     """Prepares inputs and applies network 'fn'.
@@ -66,7 +66,7 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, eps, netchunk=1024
     return mu, eps
 
 
-def batchify_rays(rays_flat, chunk=1024 * 32, **kwargs):
+def batchify_rays(rays_flat, chunk=512 * 32, **kwargs):
     """Render rays in smaller minibatches to avoid OOM.
     """
     all_ret = {}
@@ -81,7 +81,7 @@ def batchify_rays(rays_flat, chunk=1024 * 32, **kwargs):
     return all_ret
 
 
-def render(H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
+def render(H, W, K, chunk=512 * 32, rays=None, c2w=None, ndc=True,
            near=0., far=1.,
            use_viewdirs=False, c2w_staticcam=None,
            **kwargs):
@@ -462,7 +462,7 @@ def config_parser():
                         help='exponential learning rate decay (in 1000 steps)')
     parser.add_argument("--chunk", type=int, default=1024 * 32,
                         help='number of rays processed in parallel, decrease if running out of memory')
-    parser.add_argument("--netchunk", type=int, default=1024 * 32,
+    parser.add_argument("--netchunk", type=int, default=512 * 32,
                         help='number of pts sent through network in parallel, decrease if running out of memory')
     parser.add_argument("--no_batching", action='store_true',
                         help='only take random rays from 1 image at a time')
