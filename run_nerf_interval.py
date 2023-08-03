@@ -43,7 +43,7 @@ def batchify(fn, chunk, epsilon):
     return ret
 
 
-def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, eps, netchunk=512 * 32):
+def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, eps, netchunk=1024 * 32):
 
     # Added argument eps and now the function outputs mu and epsilon
     """Prepares inputs and applies network 'fn'.
@@ -66,7 +66,7 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, eps, netchunk=512 
     return mu, eps
 
 
-def batchify_rays(rays_flat, chunk=512 * 32, **kwargs):
+def batchify_rays(rays_flat, chunk=1024 * 32, **kwargs):
     """Render rays in smaller minibatches to avoid OOM.
     """
     all_ret = {}
@@ -81,7 +81,7 @@ def batchify_rays(rays_flat, chunk=512 * 32, **kwargs):
     return all_ret
 
 
-def render(H, W, K, chunk=512 * 32, rays=None, c2w=None, ndc=True,
+def render(H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
            near=0., far=1.,
            use_viewdirs=False, c2w_staticcam=None,
            **kwargs):
@@ -398,7 +398,7 @@ def render_rays(ray_batch,
     #     raw = run_network(pts)
     # The function now outputs mu and epsilon
     raw_mu, raw_eps = network_query_fn(pts, viewdirs, network_fn)
-
+    # prawy i lewy koniec
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                                  pytest=pytest)
 
@@ -419,7 +419,7 @@ def render_rays(ray_batch,
 
     ret = {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map': acc_map}
     if retraw:
-        ret['raw'] = raw_mu_fn
+        ret['raw'] = raw_mu
     if N_importance > 0:
         ret['rgb0'] = rgb_map_0
         ret['disp0'] = disp_map_0
@@ -462,7 +462,7 @@ def config_parser():
                         help='exponential learning rate decay (in 1000 steps)')
     parser.add_argument("--chunk", type=int, default=1024 * 32,
                         help='number of rays processed in parallel, decrease if running out of memory')
-    parser.add_argument("--netchunk", type=int, default=512 * 32,
+    parser.add_argument("--netchunk", type=int, default=1024 * 64,
                         help='number of pts sent through network in parallel, decrease if running out of memory')
     parser.add_argument("--no_batching", action='store_true',
                         help='only take random rays from 1 image at a time')
@@ -539,7 +539,7 @@ def config_parser():
                         help='frequency of weight ckpt saving')
     parser.add_argument("--i_testset", type=int, default=50000,
                         help='frequency of testset saving')
-    parser.add_argument("--i_video", type=int, default=50000,
+    parser.add_argument("--i_video", type=int, default=50000, ###!!!
                         help='frequency of render_poses video saving')
 
     ### Added eps argument for IntervalNeRF
@@ -717,7 +717,7 @@ def train():
     if use_batching:
         rays_rgb = torch.Tensor(rays_rgb).to(device)
 
-    N_iters = 200000 + 1
+    N_iters = 100001 + 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
