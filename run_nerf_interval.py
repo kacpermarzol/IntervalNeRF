@@ -30,6 +30,7 @@ def batchify(fn, chunk, epsilon):
     ##Batchify now outputs mu and epsilon
     if chunk is None:
         return fn
+
     def ret(inputs):
         mu_list = []
         eps_list = []
@@ -40,11 +41,11 @@ def batchify(fn, chunk, epsilon):
         mu = torch.cat(mu_list, 0)
         eps = torch.cat(eps_list, 0)
         return mu, eps
+
     return ret
 
 
 def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, eps, netchunk=1024 * 32):
-
     # Added argument eps and now the function outputs mu and epsilon
     """Prepares inputs and applies network 'fn'.
     """
@@ -143,7 +144,7 @@ def render(H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
         k_sh = list(sh[:-1]) + list(all_ret[k].shape[1:])
         all_ret[k] = torch.reshape(all_ret[k], k_sh)
 
-    k_extract = ['rgb_map', 'disp_map', 'acc_map']
+    k_extract = ['rgb_map', 'disp_map', 'acc_map', 'rgb_map_left', 'rgb_map_right']
     ret_list = [all_ret[k] for k in k_extract]
     ret_dict = {k: all_ret[k] for k in all_ret if k not in k_extract}
     return ret_list + [ret_dict]
@@ -215,7 +216,7 @@ def create_nerf(args):
                                                                         embed_fn=embed_fn,
                                                                         embeddirs_fn=embeddirs_fn,
                                                                         netchunk=args.netchunk,
-                                                                        eps=args.eps) ##Aded epsilon
+                                                                        eps=args.eps)  ##Aded epsilon
 
     # Create optimizer
     optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
@@ -320,6 +321,110 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     return rgb_map, disp_map, acc_map, weights, depth_map
 
 
+def raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=False):
+    """Transforms model's predictions to semantically meaningful values.
+    Args:
+        raw_left: [num_rays, num_samples along ray, 4] left end of the calculated interval
+        raw_right: [num_rays, num_samples along ray, 4] right end of the calculated interval
+        z_vals: [num_rays, num_samples along ray]. Integration time.
+        rays_d: [num_rays, 3]. Direction of each ray.
+    Returns:
+        rgb_map_left: [num_rays, 3]. Left end of the interval for estimated RGB color of a ray
+        rgb_map_right: ^^^
+        disp_map_left: [num_rays]. Left end of the inrercal for disparity map. Inverse of depth map
+        disp_map_right: ^^^
+        acc_map_left: [num_rays]. Left end of the interval for the sum of weights along each ray.
+        acc_map_right: ^^^
+        weights_left: [num_rays, num_samples]. Left end of the interval for the weights assigned to each sampled color.
+        weights_right: ^^^
+        depth_map_left: [num_rays]. Left end of the interval for estimated distance to object.
+        depth_map_tight: ^^^
+    """
+
+    raw_left, raw_right = raw_left + 1e-10, raw_right + 1e-10  # to ensure all values are non zero in computations
+
+    raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(
+        -act_fn(raw) * dists)  # the result of this function is always non-negative
+
+    dists = z_vals[..., 1:] - z_vals[..., :-1]  # the distances between adjacent samples
+    dists = torch.cat([dists, torch.full(dists[..., :1].shape, 1e10)], -1)  # changed second arg in torch cat
+    dists = dists * torch.norm(rays_d[..., None, :], dim=-1)  # whyyy?
+
+    # sigmoid is a monotonic function of one variable, so calculating rgb left and right is as follows:
+    # (https://en.wikipedia.org/wiki/Interval_arithmetic     - section "Elementary functions")
+    rgb_left = torch.sigmoid(raw_left[..., :3])  # [N_rays, N_samples, 3]
+    rgb_right = torch.sigmoid(raw_right[..., :3])  # [N_rays, N_samples, 3]
+
+    noise = 0.
+    # ! should noise have different values for left and right?
+    if raw_noise_std > 0.:
+        noise = torch.randn(raw_left[..., 3].shape) * raw_noise_std
+
+        # Overwrite randomly sampled data if pytest
+        if pytest:
+            np.random.seed(0)
+            noise = np.random.rand(*list(raw_left[..., 3].shape)) * raw_noise_std
+            noise = torch.Tensor(noise)
+
+    # because dist is not an interval
+    alpha_left = raw2alpha(raw_left[..., 3] + noise, dists) + 1e-10  # [N_rays, N_samples]
+    alpha_right = raw2alpha(raw_right[..., 3] + noise, dists) + 1e-10  # [N_rays, N_samples]
+
+    # assume sigma is denoted with s, delta with d, alpha with a
+
+    # w_i = T_i * a_i
+    # T_i = exp(- sum_{j=1}^{i-1}(s_j * d_j)  )
+    # 1-a_i = 1 - 1 + exp(- s_i * d_i) = exp(- s_i * d_i)
+
+    # T_i = exp(- sum_{j=1}^{i-1}(s_j * d_j)) = exp(-(s_1*d_1 + s_2*d_2 * ... * s_{i-1} * d_{i-1})) =
+    # = exp(-s_1*d_1) * exp(-s_2*d_2) * ... * exp(-s_{i-1} * d_{i-1})) =
+    # = (1-a_1) * (1-a_2) * ... * (1-a_{i-1})
+
+    T_left = torch.cumprod(torch.cat([torch.ones((alpha_left.shape[0], 1)), 1. - alpha_left + 1e-10], -1), -1)[:,
+             :-1] + 1e-10
+    T_right = torch.cumprod(torch.cat([torch.ones((alpha_right.shape[0], 1)), 1. - alpha_right + 1e-10], -1), -1)[:,
+              :-1] + 1e-10
+
+    assert_all_nonnegative = lambda tensor: (tensor > 0).all()
+    assert assert_all_nonnegative(alpha_left), "Not all elements are positive (alpha_left)"
+    assert assert_all_nonnegative(alpha_right), "Not all elements are positive (alpha_right)"
+    assert assert_all_nonnegative(T_left), "Not all elements are positive (T_left)"
+    assert assert_all_nonnegative(T_right), "Not all elements are positive (T_right))"
+
+    # After we have asserted that all of the elements in tensors are non-negative, we can use the simplified
+    # version of interval multiplication, i.e [a,b] * [x,y] == [a*x, b,y]
+
+    weights_left = alpha_left * T_left + 1e-10
+    weights_right = alpha_right * T_right + 1e-10
+
+    assert assert_all_nonnegative(weights_left), "Not all elements are positive (weights_left)"
+    assert assert_all_nonnegative(weights_right), "Not all elements are positive (weights_right)"
+    assert assert_all_nonnegative(rgb_left), "Not all elements are positive (rgb_left)"
+    assert assert_all_nonnegative(rgb_right), "Not all elements are positive (rgb_right)"
+
+    # Again we've checked that all elements of the tensors needed for calculating the rgb map are non-negative, hence we
+    # use simplified multiplication formula
+
+    rgb_map_left = torch.sum(weights_left[..., None] * rgb_left, -2)  # [N_rays, 3]
+    rgb_map_right = torch.sum(weights_left[..., None] * rgb_left, -2)  # [N_rays, 3]
+
+    # depth_map_left = torch.sum(weights_left * z_vals, -1)
+    # depth_map_right = torch.sum(weights_right * z_vals, -1)
+    #
+    # disp_map_left = 1. / torch.max(1e-10 * torch.ones_like(depth_map_left), depth_map_left / torch.sum(weights_left, -1))
+    # disp_map_right = 1. / torch.max(1e-10 * torch.ones_like(depth_map_left), depth_map_right / torch.sum(weights_right, -1))
+    #
+    acc_map_left = torch.sum(weights_left, -1)
+    acc_map_right = torch.sum(weights_right, -1)
+
+    if white_bkgd:
+        rgb_map_left = rgb_map_left + (1. - acc_map_left[..., None])
+        rgb_map_right = rgb_map_right + (1. - acc_map_right[..., None])
+
+    return rgb_map_left, rgb_map_right
+    # , disp_map_left, disp_map_right, acc_map_left, acc_map_right, weights_left, weights_right, depth_map_left, depth_map_right
+
+
 def render_rays(ray_batch,
                 network_fn,
                 network_query_fn,
@@ -395,35 +500,45 @@ def render_rays(ray_batch,
 
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
-    #     raw = run_network(pts)
     # The function now outputs mu and epsilon
     raw_mu, raw_eps = network_query_fn(pts, viewdirs, network_fn)
-    # prawy i lewy koniec
+    raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
+
+    # get outputs from the basic nerf
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                                  pytest=pytest)
 
+    # get left and right ends of interval for rgb map
+    rgb_map_left, rgb_map_right = raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std,white_bkgd, pytest=pytest)
+
+
     if N_importance > 0:
-        rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
+        rgb_map_0, disp_map_0, acc_map_0, rgb_map_left_0, rgb_map_right_0 = rgb_map, disp_map, acc_map, rgb_map_left, rgb_map_right
 
         z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
         z_samples = sample_pdf(z_vals_mid, weights[..., 1:-1], N_importance, det=(perturb == 0.), pytest=pytest)
         z_samples = z_samples.detach()
 
         z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
-        pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples + N_importance, 3]
+        pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :,
+                                                            None]  # [N_rays, N_samples + N_importance, 3]
 
         run_fn = network_fn if network_fine is None else network_fine
-        raw_mu_fn, raw_eps_fn = network_query_fn(pts, viewdirs, run_fn)
-        rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu_fn, z_vals, rays_d, raw_noise_std, white_bkgd,
-                                                                     pytest=pytest)
+        raw_mu, raw_eps = network_query_fn(pts, viewdirs, run_fn)
+        raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
 
-    ret = {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map': acc_map}
+        rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
+        rgb_map_left, rgb_map_right= raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std, white_bkgd,pytest=pytest)
+
+    ret = {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map': acc_map, 'rgb_map_left': rgb_map_left, 'rgb_map_right': rgb_map_right}
     if retraw:
         ret['raw'] = raw_mu
     if N_importance > 0:
         ret['rgb0'] = rgb_map_0
         ret['disp0'] = disp_map_0
         ret['acc0'] = acc_map_0
+        ret['rgb_map_left0'] = rgb_map_left_0
+        ret['rgb_map_right0'] = rgb_map_right_0
         ret['z_std'] = torch.std(z_samples, dim=-1, unbiased=False)  # [N_rays]
 
     for k in ret:
@@ -539,7 +654,7 @@ def config_parser():
                         help='frequency of weight ckpt saving')
     parser.add_argument("--i_testset", type=int, default=50000,
                         help='frequency of testset saving')
-    parser.add_argument("--i_video", type=int, default=50000, ###!!!
+    parser.add_argument("--i_video", type=int, default=50000,  ###!!!
                         help='frequency of render_poses video saving')
 
     ### Added eps argument for IntervalNeRF
@@ -718,6 +833,8 @@ def train():
         rays_rgb = torch.Tensor(rays_rgb).to(device)
 
     N_iters = 100001 + 1
+    N_kappa = N_iters / 2
+    kappa=0
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
@@ -778,21 +895,32 @@ def train():
                 target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
 
         #####  Core optimization loop  #####
-        rgb, disp, acc, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
-                                        verbose=i < 10, retraw=True,
-                                        **render_kwargs_train)
+
+        rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
+                                                                     verbose=i < 10, retraw=True,
+                                                                     **render_kwargs_train)
+
+        trans = extras['raw'][..., -1]
 
         optimizer.zero_grad()
-        img_loss = img2mse(rgb, target_s)
-        trans = extras['raw'][..., -1]
-        loss = img_loss
-        psnr = mse2psnr(img_loss)
+        img_loss_fit = img2mse(rgb, target_s)
+        psnr = mse2psnr(img_loss_fit)
+
+        loss_fit = img_loss_fit
+        loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
 
         if 'rgb0' in extras:
             img_loss0 = img2mse(extras['rgb0'], target_s)
-            loss = loss + img_loss0
             psnr0 = mse2psnr(img_loss0)
+            loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
 
+            loss_fit = loss_fit + img_loss0
+            loss_spec = loss_spec + loss_spec0 # loss_spec = loss_spec0 ???
+
+        if i < N_kappa:
+            kappa = max(1 - 0.00005 * i, 0.5)
+
+        loss = kappa * loss_fit + (1 - kappa) * loss_spec
         loss.backward()
         optimizer.step()
 
@@ -893,6 +1021,6 @@ def train():
 
 
 if __name__ == '__main__':
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
     train()

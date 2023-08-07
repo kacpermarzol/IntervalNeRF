@@ -10,6 +10,14 @@ mse2psnr = lambda x: -10. * torch.log(x) / torch.log(torch.Tensor([10.]))
 to8b = lambda x: (255 * np.clip(x, 0, 1)).astype(np.uint8)
 
 
+# interval
+def interval_loss(y, left, right):
+    loss = torch.max(torch.abs(y - left), torch.abs(y - right))
+    loss = torch.mean(loss, dim=-1)
+    loss = torch.mean(loss, dim=0)
+    return loss
+
+
 # Positional encoding (section 5.1)
 class Embedder:
 
@@ -126,7 +134,7 @@ class NeRF(nn.Module):
 
             mu = torch.cat([input_views.T, mu], 0)
             eps = torch.cat([torch.zeros(input_views.shape[1], eps.shape[-1]), eps], 0)
-            z_l, z_u = mu - eps, mu + eps # no activation in official code here
+            z_l, z_u = mu - eps, mu + eps  # no activation in official code here
 
             for i, layer in enumerate(self.views_linears):
                 mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
@@ -149,7 +157,6 @@ class NeRF(nn.Module):
 
         mu, eps = mu.T, eps.T
         return mu, eps
-
 
     def load_weights_from_keras(self, weights):
         assert self.use_viewdirs, "Not implemented if use_viewdirs=False"
