@@ -343,7 +343,7 @@ def raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std=0, white_
     """
 
     raw_left, raw_right = raw_left + 1e-10, raw_right + 1e-10  # to ensure all values are non zero in computations
-    print('left' , raw_left)
+    # print('left' , raw_left)
 
     raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(
         -act_fn(raw) * dists)  # the result of this function is always non-negative
@@ -504,7 +504,7 @@ def render_rays(ray_batch,
     # The function now outputs mu and epsilon
     raw_mu, raw_eps = network_query_fn(pts, viewdirs, network_fn)
 
-    print("raw_eps:" , raw_eps)
+    # print("raw_eps:" , raw_mu)
     raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
 
     # get outputs from the basic nerf
@@ -665,7 +665,7 @@ def config_parser():
                         help='frequency of render_poses video saving')
 
     ### Added eps argument for IntervalNeRF
-    parser.add_argument("--eps", type=float, default=.001,
+    parser.add_argument("--eps", type=float, default=0.0,
                         help=' todo ')
 
     return parser
@@ -927,8 +927,9 @@ def train():
         if i < N_kappa:
             kappa = max(1 - 0.00005 * i, 0.5)
 
-        loss = kappa * loss_fit + (1 - kappa) * loss_spec
-        print("LOSS", loss)
+        # loss = kappa * loss_fit + (1 - kappa) * loss_spec
+        loss = loss_fit
+        print("LOSS", loss.item())
 
         loss.backward()
         optimizer.step()
