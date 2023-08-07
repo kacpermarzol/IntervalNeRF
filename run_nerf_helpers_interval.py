@@ -122,7 +122,7 @@ class NeRF(nn.Module):
 
         if self.use_viewdirs:
             z_l, z_u = F.relu(z_l), F.relu(z_u)
-            mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
+            mu, eps = (z_u + z_l) / 2, (z_u - z_l) /2
 
             mu_alpha = self.alpha_linear.weight @ mu + self.alpha_linear.bias[:, None]
             eps_alpha = torch.abs(self.alpha_linear.weight) @ eps

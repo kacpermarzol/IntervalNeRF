@@ -661,11 +661,11 @@ def config_parser():
                         help='frequency of weight ckpt saving')
     parser.add_argument("--i_testset", type=int, default=50000,
                         help='frequency of testset saving')
-    parser.add_argument("--i_video", type=int, default=20000,  ###!!!
+    parser.add_argument("--i_video", type=int, default=25000,  ###!!!
                         help='frequency of render_poses video saving')
 
     ### Added eps argument for IntervalNeRF
-    parser.add_argument("--eps", type=float, default=0.0,
+    parser.add_argument("--eps", type=float, default=0.001,
                         help=' todo ')
 
     return parser
@@ -839,8 +839,8 @@ def train():
     if use_batching:
         rays_rgb = torch.Tensor(rays_rgb).to(device)
 
-    N_iters = 100000 + 1
-    N_kappa = N_iters / 2
+    N_iters = 100001 + 1
+    N_kappa = 10000
     kappa = 0
     print('Begin')
     print('TRAIN views are', i_train)
@@ -927,9 +927,7 @@ def train():
         if i < N_kappa:
             kappa = max(1 - 0.00005 * i, 0.5)
 
-        # loss = kappa * loss_fit + (1 - kappa) * loss_spec
-        loss = loss_fit
-        print("LOSS", loss.item())
+        loss = kappa * loss_fit + (1 - kappa) * loss_spec
 
         loss.backward()
         optimizer.step()
@@ -1031,5 +1029,5 @@ def train():
 
 
 if __name__ == '__main__':
-    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    torch.set_default_tensor_type('torch.cuda.FloatTensor')
     train()
