@@ -215,7 +215,7 @@ def create_nerf(args):
     network_query_fn = lambda inputs, viewdirs, network_fn, eps: run_network(inputs, viewdirs, network_fn, eps,
                                                                         embed_fn=embed_fn,
                                                                         embeddirs_fn=embeddirs_fn,
-                                                                        netchunk=args.netchunk)  # Added epsilon
+                                                                        netchunk=args.netchunk)  ##Aded epsilon
 
     # Create optimizer
     optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
@@ -295,7 +295,6 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     dists = dists * torch.norm(rays_d[..., None, :], dim=-1)
 
     rgb = torch.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]]
-
     noise = 0.
     if raw_noise_std > 0.:
         noise = torch.randn(raw[..., 3].shape) * raw_noise_std
@@ -319,6 +318,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
         rgb_map = rgb_map + (1. - acc_map[..., None])
 
     return rgb_map, disp_map, acc_map, weights, depth_map
+
 
 
 def raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=False):
@@ -353,7 +353,6 @@ def raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std=0, white_
 
     # sigmoid is a monotonic function of one variable, so calculating rgb left and right is as follows:
     # (https://en.wikipedia.org/wiki/Interval_arithmetic     - section "Elementary functions")
-    rgb_left = torch.sigmoid(raw_left[..., :3]) + 1e-10  # [N_rays, N_samples, 3]
     rgb_right = torch.sigmoid(raw_right[..., :3]) + 1e-10  # [N_rays, N_samples, 3]
 
     noise = 0.
@@ -426,6 +425,7 @@ def raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std=0, white_
 
 
 def render_rays(ray_batch,
+                eps,
                 network_fn,
                 network_query_fn,
                 N_samples,
@@ -664,7 +664,7 @@ def config_parser():
                         help='frequency of render_poses video saving')
 
     ### Added eps argument for IntervalNeRF
-    parser.add_argument("--eps", type=float, default=0.001,
+    parser.add_argument("--eps", type=float, default=0.0,
                         help=' todo ')
 
     return parser
@@ -673,7 +673,7 @@ def config_parser():
 def train():
     parser = config_parser()
     args = parser.parse_args()
-
+    print(args.eps)
     # Load data
     K = None
     if args.dataset_type == 'llff':
@@ -932,7 +932,6 @@ def train():
             kappa = max(1 - 0.00005 * i, 0.5)
 
         loss = kappa * loss_fit + (1 - kappa) * loss_spec
-
         loss.backward()
         optimizer.step()
 
