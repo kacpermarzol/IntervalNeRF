@@ -45,7 +45,7 @@ def batchify(fn, chunk, epsilon):
     return ret
 
 
-def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, eps, netchunk=1024 * 32):
+def run_network(inputs, viewdirs, fn, eps, embed_fn, embeddirs_fn, netchunk=1024 * 32):
     # Added argument eps and now the function outputs mu and epsilon
     """Prepares inputs and applies network 'fn'.
     """
@@ -67,12 +67,12 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, eps, netchunk=1024
     return mu, eps
 
 
-def batchify_rays(rays_flat, chunk=1024 * 32, **kwargs):
+def batchify_rays(rays_flat, eps, chunk=1024 * 32, **kwargs):
     """Render rays in smaller minibatches to avoid OOM.
     """
     all_ret = {}
     for i in range(0, rays_flat.shape[0], chunk):
-        ret = render_rays(rays_flat[i:i + chunk], **kwargs)
+        ret = render_rays(rays_flat[i:i + chunk], eps=eps, **kwargs)
         for k in ret:
             if k not in all_ret:
                 all_ret[k] = []
@@ -82,7 +82,7 @@ def batchify_rays(rays_flat, chunk=1024 * 32, **kwargs):
     return all_ret
 
 
-def render(H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
+def render(H, W, K, eps,chunk=1024 * 32, rays=None, c2w=None, ndc=True,
            near=0., far=1.,
            use_viewdirs=False, c2w_staticcam=None,
            **kwargs):
@@ -139,7 +139,7 @@ def render(H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
         rays = torch.cat([rays, viewdirs], -1)
 
     # Render and reshape
-    all_ret = batchify_rays(rays, chunk, **kwargs)
+    all_ret = batchify_rays(rays, eps, chunk, **kwargs)
     for k in all_ret:
         k_sh = list(sh[:-1]) + list(all_ret[k].shape[1:])
         all_ret[k] = torch.reshape(all_ret[k], k_sh)
@@ -150,7 +150,7 @@ def render(H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
     return ret_list + [ret_dict]
 
 
-def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedir=None, render_factor=0):
+def render_path(render_poses, hwf, K, chunk, render_kwargs, eps, gt_imgs=None, savedir=None, render_factor=0):
     H, W, focal = hwf
 
     if render_factor != 0:
@@ -166,7 +166,7 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
     for i, c2w in enumerate(tqdm(render_poses)):
         print(i, time.time() - t)
         t = time.time()
-        rgb, disp, acc, _ = render(H, W, K, chunk=chunk, c2w=c2w[:3, :4], **render_kwargs)
+        rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(H, W, K, eps=0.0, chunk=chunk, c2w=c2w[:3, :4], **render_kwargs)
         rgbs.append(rgb.cpu().numpy())
         disps.append(disp.cpu().numpy())
         if i == 0:
@@ -212,11 +212,10 @@ def create_nerf(args):
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
         grad_vars += list(model_fine.parameters())
 
-    network_query_fn = lambda inputs, viewdirs, network_fn: run_network(inputs, viewdirs, network_fn,
+    network_query_fn = lambda inputs, viewdirs, network_fn, eps: run_network(inputs, viewdirs, network_fn, eps,
                                                                         embed_fn=embed_fn,
                                                                         embeddirs_fn=embeddirs_fn,
-                                                                        netchunk=args.netchunk,
-                                                                        eps=args.eps)  ##Aded epsilon
+                                                                        netchunk=args.netchunk)  # Added epsilon
 
     # Create optimizer
     optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
@@ -502,7 +501,7 @@ def render_rays(ray_batch,
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
     # The function now outputs mu and epsilon
-    raw_mu, raw_eps = network_query_fn(pts, viewdirs, network_fn)
+    raw_mu, raw_eps = network_query_fn(pts, viewdirs, network_fn, eps)
 
     # print("raw_eps:" , raw_mu)
     raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
@@ -527,7 +526,7 @@ def render_rays(ray_batch,
                                                             None]  # [N_rays, N_samples + N_importance, 3]
 
         run_fn = network_fn if network_fine is None else network_fine
-        raw_mu, raw_eps = network_query_fn(pts, viewdirs, run_fn)
+        raw_mu, raw_eps = network_query_fn(pts, viewdirs, run_fn, eps)
         raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
 
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu, z_vals, rays_d, raw_noise_std, white_bkgd,
@@ -850,6 +849,7 @@ def train():
     # Summary writers
     # writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
 
+    epsilon = args.eps
     start = start + 1
     for i in trange(start, N_iters):
         time0 = time.time()
@@ -903,7 +903,11 @@ def train():
 
         #####  Core optimization loop  #####
 
-        rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
+        if i < 20000:
+            eps = (i / 20000) * epsilon
+        else:
+            eps = epsilon
+        rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(H, W, K, eps, chunk=args.chunk, rays=batch_rays,
                                                                      verbose=i < 10, retraw=True,
                                                                      **render_kwargs_train)
         # print('rgb ', rgb, '\n rgb_l ', rgb_map_left, '\n rgb_r ', rgb_map_right )
@@ -959,7 +963,7 @@ def train():
         if i % args.i_video == 0 and i > 0:
             # Turn on testing mode
             with torch.no_grad():
-                rgbs, disps = render_path(render_poses, hwf, K, args.chunk, render_kwargs_test)
+                rgbs, disps = render_path(render_poses, hwf, K, args.chunk, render_kwargs_test, epsilon)
             print('Done, saving', rgbs.shape, disps.shape)
             moviebase = os.path.join(basedir, expname, '{}_spiral_{:06d}_'.format(expname, i))
             imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
@@ -977,7 +981,7 @@ def train():
             os.makedirs(testsavedir, exist_ok=True)
             print('test poses shape', poses[i_test].shape)
             with torch.no_grad():
-                render_path(torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk, render_kwargs_test,
+                render_path(torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk, render_kwargs_test, epsilon,
                             gt_imgs=images[i_test], savedir=testsavedir)
             print('Saved test set')
 

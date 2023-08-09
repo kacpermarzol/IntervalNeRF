@@ -103,7 +103,7 @@ class NeRF(nn.Module):
         else:
             self.output_linear = nn.Linear(W, output_ch)
 
-    def forward(self, x, eps=0.0):
+    def forward(self, x, eps):
         input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
         eps = eps * torch.ones_like(input_pts)
         mu = input_pts
@@ -111,7 +111,7 @@ class NeRF(nn.Module):
 
         z_l, z_u = mu - eps, mu + eps
         for i, layer in enumerate(self.pts_linears):
-            z_l, z_u = F.relu(z_l), F.relu(z_u)
+            # print(i, z_l, z_u, "\n \n \n")
             mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
             mu = layer.weight @ mu + layer.bias[:, None]
             eps = torch.abs(layer.weight) @ eps
@@ -119,9 +119,9 @@ class NeRF(nn.Module):
                 mu = torch.cat([input_pts.T, mu], 0)
                 eps = torch.cat([torch.zeros(input_pts.shape[1], eps.shape[-1]), eps], 0)
             z_l, z_u = mu - eps, mu + eps
+            z_l, z_u = F.relu(z_l), F.relu(z_u)
 
         if self.use_viewdirs:
-            z_l, z_u = F.relu(z_l), F.relu(z_u)
             mu, eps = (z_u + z_l) / 2, (z_u - z_l) /2
 
             mu_alpha = self.alpha_linear.weight @ mu + self.alpha_linear.bias[:, None]
@@ -135,7 +135,6 @@ class NeRF(nn.Module):
             z_l, z_u = mu - eps, mu + eps
 
             for i, layer in enumerate(self.views_linears):
-                z_l, z_u = F.relu(z_l), F.relu(z_u)
                 mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
                 mu = layer.weight @ mu + layer.bias[:, None]
                 eps = torch.abs(layer.weight) @ eps
@@ -150,7 +149,6 @@ class NeRF(nn.Module):
             eps = torch.cat([eps, eps_alpha], 0)
 
         else:
-            z_l, z_u = F.relu(z_l), F.relu(z_u)
             mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
             mu = self.output_linear.weight @ mu + self.output_linear.bias[:, None]
             eps = torch.abs(self.output_linear.weight) @ eps
