@@ -111,7 +111,6 @@ class NeRF(nn.Module):
 
         z_l, z_u = mu - eps, mu + eps
         for i, layer in enumerate(self.pts_linears):
-            # print(i, z_l, z_u, "\n \n \n")
             mu, eps = (z_u + z_l) / 2, (z_u - z_l) / 2
             mu = layer.weight @ mu + layer.bias[:, None]
             eps = torch.abs(layer.weight) @ eps

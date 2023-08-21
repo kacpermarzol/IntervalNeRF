@@ -18,6 +18,10 @@ from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_LINEMOD import load_LINEMOD_data
 
+from functools import partialmethod
+
+tqdm.__init__ = partialmethod(tqdm.__init__, disable=True)
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.random.seed(0)
 DEBUG = False
@@ -82,7 +86,7 @@ def batchify_rays(rays_flat, eps, chunk=1024 * 32, **kwargs):
     return all_ret
 
 
-def render(H, W, K, eps,chunk=1024 * 32, rays=None, c2w=None, ndc=True,
+def render(H, W, K, eps, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
            near=0., far=1.,
            use_viewdirs=False, c2w_staticcam=None,
            **kwargs):
@@ -166,7 +170,8 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, eps, gt_imgs=None, s
     for i, c2w in enumerate(tqdm(render_poses)):
         print(i, time.time() - t)
         t = time.time()
-        rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(H, W, K, eps=0.0, chunk=chunk, c2w=c2w[:3, :4], **render_kwargs)
+        rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(H, W, K, eps=eps, chunk=chunk, c2w=c2w[:3, :4],
+                                                                     **render_kwargs)
         rgbs.append(rgb.cpu().numpy())
         disps.append(disp.cpu().numpy())
         if i == 0:
@@ -213,9 +218,9 @@ def create_nerf(args):
         grad_vars += list(model_fine.parameters())
 
     network_query_fn = lambda inputs, viewdirs, network_fn, eps: run_network(inputs, viewdirs, network_fn, eps,
-                                                                        embed_fn=embed_fn,
-                                                                        embeddirs_fn=embeddirs_fn,
-                                                                        netchunk=args.netchunk)  ##Aded epsilon
+                                                                             embed_fn=embed_fn,
+                                                                             embeddirs_fn=embeddirs_fn,
+                                                                             netchunk=args.netchunk)  ##Aded epsilon
 
     # Create optimizer
     optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
@@ -306,6 +311,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
             noise = torch.Tensor(noise)
 
     alpha = raw2alpha(raw[..., 3] + noise, dists) + 1e-10  # [N_rays, N_samples]
+    # print("alpha", alpha)
     # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
     weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
     rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
@@ -318,7 +324,6 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
         rgb_map = rgb_map + (1. - acc_map[..., None])
 
     return rgb_map, disp_map, acc_map, weights, depth_map
-
 
 
 def raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=False):
@@ -353,6 +358,7 @@ def raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std=0, white_
 
     # sigmoid is a monotonic function of one variable, so calculating rgb left and right is as follows:
     # (https://en.wikipedia.org/wiki/Interval_arithmetic     - section "Elementary functions")
+    rgb_left = torch.sigmoid(raw_left[..., :3]) + 1e-10  # [N_rays, N_samples, 3]
     rgb_right = torch.sigmoid(raw_right[..., :3]) + 1e-10  # [N_rays, N_samples, 3]
 
     noise = 0.
@@ -579,7 +585,7 @@ def config_parser():
                         help='batch size (number of random rays per gradient step)')
     parser.add_argument("--lrate", type=float, default=5e-4,
                         help='learning rate')
-    parser.add_argument("--lrate_decay", type=int, default=250,
+    parser.add_argument("--lrate_decay", type=int, default=500,  ## to make lrate go from 5e-4 to 5e-6 as in papers
                         help='exponential learning rate decay (in 1000 steps)')
     parser.add_argument("--chunk", type=int, default=1024 * 32,
                         help='number of rays processed in parallel, decrease if running out of memory')
@@ -932,6 +938,10 @@ def train():
             kappa = max(1 - 0.00005 * i, 0.5)
 
         loss = kappa * loss_fit + (1 - kappa) * loss_spec
+
+        if i < 200:
+            print(i, " ", loss.item())
+
         loss.backward()
         optimizer.step()
 
