@@ -19,7 +19,6 @@ from load_blender import load_blender_data
 from load_LINEMOD import load_LINEMOD_data
 
 from functools import partialmethod
-
 tqdm.__init__ = partialmethod(tqdm.__init__, disable=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -909,10 +908,13 @@ def train():
 
         #####  Core optimization loop  #####
 
-        if i < 20000:
-            eps = (i / 20000) * epsilon
+        if i < 1001:
+            eps = 0.0
+        elif i < 20000:
+            eps = ((i - 1000) / 20000) * epsilon
         else:
             eps = epsilon
+
         rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(H, W, K, eps, chunk=args.chunk, rays=batch_rays,
                                                                      verbose=i < 10, retraw=True,
                                                                      **render_kwargs_train)
@@ -941,6 +943,9 @@ def train():
 
         if i < 200:
             print(i, " ", loss.item())
+
+        if(i==start and loss.item()<0.7):
+            i = start-1
 
         loss.backward()
         optimizer.step()
