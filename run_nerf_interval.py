@@ -17,9 +17,10 @@ from load_llff import load_llff_data
 from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_LINEMOD import load_LINEMOD_data
+from load_multiscale import load_multiscale_data
 
-from functools import partialmethod
-tqdm.__init__ = partialmethod(tqdm.__init__, disable=True)
+# from functools import partialmethod
+# tqdm.__init__ = partialmethod(tqdm.__init__, disable=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.random.seed(0)
@@ -681,7 +682,23 @@ def train():
     print(args.eps)
     # Load data
     K = None
-    if args.dataset_type == 'llff':
+
+    if args.dataset_type == 'multiscale':
+        print("multiscale")
+        images, poses, render_poses, hwf, i_split, lossmult = load_multiscale_data(args.datadir, args.white_bkgd)
+        i_train, i_val, i_test = i_split
+        print(images.dtype)
+        print("images", np.shape(images[1]))
+        print("poses", np.shape(poses))
+        # print("h", np.shape(h))
+        # print("w", np.shape(w))
+        # print("f", np.shape(f))
+        print('lossmult', np.shape(lossmult))
+
+        near = 2.
+        far = 6.
+
+    elif args.dataset_type == 'llff':
         images, poses, bds, render_poses, i_test = load_llff_data(args.datadir, args.factor,
                                                                   recenter=True, bd_factor=.75,
                                                                   spherify=args.spherify)
@@ -753,15 +770,16 @@ def train():
 
     # Cast intrinsics to right types
     H, W, focal = hwf
-    H, W = int(H), int(W)
-    hwf = [H, W, focal]
+    # H, W = int(H), int(W)
+    # hwf = [H, W, focal]
 
-    if K is None:
-        K = np.array([
-            [focal, 0, 0.5 * W],
-            [0, focal, 0.5 * H],
-            [0, 0, 1]
-        ])
+    # if K is None:
+    #     print("K nonne")
+    #     K = np.array([
+    #         [focal, 0, 0.5 * W],
+    #         [0, focal, 0.5 * H],
+    #         [0, 0, 1]
+    #     ])
 
     if args.render_test:
         render_poses = np.array(poses[i_test])
@@ -822,26 +840,65 @@ def train():
     use_batching = not args.no_batching
     if use_batching:
         # For random ray batching
+        H_train = H[i_train]
+        W_train = W[i_train]
+        poses_train = poses[i_train, :3, :4]
+        lossmult2=[]
         print('get rays')
-        rays = np.stack([get_rays_np(H, W, K, p) for p in poses[:, :3, :4]], 0)  # [N, ro+rd, H, W, 3]
-        print('done, concats')
-        rays_rgb = np.concatenate([rays, images[:, None]], 1)  # [N, ro+rd+rgb, H, W, 3]
-        rays_rgb = np.transpose(rays_rgb, [0, 2, 3, 1, 4])  # [N, H, W, ro+rd+rgb, 3]
-        rays_rgb = np.stack([rays_rgb[i] for i in i_train], 0)  # train images only
-        rays_rgb = np.reshape(rays_rgb, [-1, 3, 3])  # [(N-1)*H*W, ro+rd+rgb, 3]
-        rays_rgb = rays_rgb.astype(np.float32)
-        print('shuffle rays')
-        np.random.shuffle(rays_rgb)
+        rays = [get_rays_np(H[i], W[i], np.array([
+                [focal[i], 0, 0.5 * W[i]],
+                [0, focal[i], 0.5 * H[i]],
+                [0, 0, 1]])
+                ,p) for i, p in enumerate(poses_train)]  # [N, ro+rd, H, W, 3]
 
-        print('done')
+
+        lossmult2 = np.concatenate([ np.array(np.full((h*w,1), lossmult[i])) for i,(h,w) in enumerate(zip(H_train,W_train))]).flatten().reshape(-1, 1)
+
+        print(lossmult2)
+        print(np.shape(lossmult2))
+        print('done, concats')
+
+
+        rays_rgb = []
+        for i, ray in enumerate(rays):
+            img = images[i]
+            concatenated_array = np.concatenate((ray,img[None,:]))
+            rays_rgb.append(concatenated_array)
+
+        print(rays_rgb[1].shape)
+        # rays_rgb = np.transpose(rays_rgb, [0, 2, 3, 1, 4])  # [N, H, W, ro+rd+rgb, 3]
+        for i, ray in enumerate(rays_rgb):
+            rays_rgb[i] = np.transpose(ray, [1,2,0,3])
+        # rays_rgb = [rays_rgb[i] for i in i_train]  # train images only
+
+        for i, ray in enumerate(rays_rgb):
+            rays_rgb[i] = ray.reshape(-1, 3, 3)
+        rays_rgb=np.concatenate(rays_rgb)
+        print(np.shape(rays_rgb))
+        rays_rgb = np.array(rays_rgb, dtype=np.float32)
+        print('shuffle rays')
+
+        rand_idx = torch.randperm(rays_rgb.shape[0])
+        # index_array = np.arange(len(lossmult2))
+        # np.random.shuffle(index_array)
+        rays_rgb = rays_rgb[rand_idx]
+        lossmult2 = lossmult2[rand_idx]
+        # np.random.shuffle(rays_rgb)
+
+        # unique_values, counts = np.unique(lossmult2, return_counts=True)
+        # # Print the unique values and their counts
+        # for value, count in zip(unique_values, counts):
+        #     print(f"Number {value} appears {count} times")
+        # print('done')
         i_batch = 0
 
     # Move training data to GPU
-    if use_batching:
-        images = torch.Tensor(images).to(device)
+    # if use_batching:
+    #     images = torch.Tensor(images).to(device)
     poses = torch.Tensor(poses).to(device)
     if use_batching:
         rays_rgb = torch.Tensor(rays_rgb).to(device)
+        lossmult2 = torch.Tensor(lossmult2).to(device)
 
     N_iters = 100001 + 1
     N_kappa = 10000
@@ -863,6 +920,7 @@ def train():
         if use_batching:
             # Random over all images
             batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
+            mask = lossmult2[i_batch:i_batch + N_rand]
             batch = torch.transpose(batch, 0, 1)
             batch_rays, target_s = batch[:2], batch[2]
 
@@ -871,43 +929,58 @@ def train():
                 print("Shuffle data after an epoch!")
                 rand_idx = torch.randperm(rays_rgb.shape[0])
                 rays_rgb = rays_rgb[rand_idx]
+                lossmult2 = lossmult2[rand_idx]
                 i_batch = 0
 
         else:
             # Random from one image
             img_i = np.random.choice(i_train)
             target = images[img_i]
+            print('target shape ', target.shape)
             target = torch.Tensor(target).to(device)
             pose = poses[img_i, :3, :4]
 
+
             if N_rand is not None:
-                rays_o, rays_d = get_rays(H, W, K, torch.Tensor(pose))  # (H, W, 3), (H, W, 3)
+                h,w,f = H[img_i], W[img_i], focal[img_i]
+                k = np.array([[f, 0, 0.5 * w],
+                              [0, f, 0.5 * h],
+                              [0, 0, 1]])
+                rays_o, rays_d = get_rays(h, w, k, torch.Tensor(pose))  # (H, W, 3), (H, W, 3)
 
                 if i < args.precrop_iters:
-                    dH = int(H // 2 * args.precrop_frac)
-                    dW = int(W // 2 * args.precrop_frac)
+                    dH = int(h // 2 * args.precrop_frac)
+                    dW = int(w // 2 * args.precrop_frac)
                     coords = torch.stack(
                         torch.meshgrid(
-                            torch.linspace(H // 2 - dH, H // 2 + dH - 1, 2 * dH),
-                            torch.linspace(W // 2 - dW, W // 2 + dW - 1, 2 * dW)
+                            torch.linspace(h // 2 - dH, h // 2 + dH - 1, 2 * dH),
+                            torch.linspace(w // 2 - dW, w // 2 + dW - 1, 2 * dW)
                         ), -1)
                     if i == start:
                         print(
                             f"[Config] Center cropping of size {2 * dH} x {2 * dW} is enabled until iter {args.precrop_iters}")
                 else:
-                    coords = torch.stack(torch.meshgrid(torch.linspace(0, H - 1, H), torch.linspace(0, W - 1, W)),
+                    coords = torch.stack(torch.meshgrid(torch.linspace(0, h - 1, h), torch.linspace(0, w - 1, w)),
                                          -1)  # (H, W, 2)
 
                 coords = torch.reshape(coords, [-1, 2])  # (H * W, 2)
+                print(coords.shape[0])
+                print(N_rand)
                 select_inds = np.random.choice(coords.shape[0], size=[N_rand], replace=False)  # (N_rand,)
+                # print("N_rand, | ", select_inds.shape)
                 select_coords = coords[select_inds].long()  # (N_rand, 2)
+                # print("N_rand, 2  |", select_coords.shape )
                 rays_o = rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+                # print("N_rand, 3  |", rays_o.shape )
                 rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+                # print("N_rand, 3  |", rays_d.shape )
                 batch_rays = torch.stack([rays_o, rays_d], 0)
                 target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+                # print("N_rand, 3  |", target_s.shape )
+                mask = np.full((N_rand, 1), lossmult[img_i])
+                mask = torch.Tensor(mask).to(device)
 
         #####  Core optimization loop  #####
-
         if i < 1001:
             eps = 0.0
         elif i < 20000:
@@ -915,7 +988,8 @@ def train():
         else:
             eps = epsilon
 
-        rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(H, W, K, eps, chunk=args.chunk, rays=batch_rays,
+        # print(batch_rays)
+        rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays,
                                                                      verbose=i < 10, retraw=True,
                                                                      **render_kwargs_train)
         # print('rgb ', rgb, '\n rgb_l ', rgb_map_left, '\n rgb_r ', rgb_map_right )
@@ -923,6 +997,7 @@ def train():
 
         optimizer.zero_grad()
         img_loss_fit = img2mse(rgb, target_s)
+        print("LOSS", img_loss_fit)
         psnr = mse2psnr(img_loss_fit)
 
         loss_fit = img_loss_fit
@@ -933,19 +1008,19 @@ def train():
             psnr0 = mse2psnr(img_loss0)
             loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
 
-            loss_fit = loss_fit + img_loss0
-            loss_spec = loss_spec + loss_spec0  # loss_spec = loss_spec???
+            loss_fit = loss_fit + 0.1 * img_loss0
+            loss_spec = loss_spec + 0.1 * loss_spec0
 
-        if i < N_kappa:
+        if i < 1001:
+            kappa=1
+        elif i < N_kappa:
             kappa = max(1 - 0.00005 * i, 0.5)
 
         loss = kappa * loss_fit + (1 - kappa) * loss_spec
 
         if i < 200:
-            print(i, " ", loss.item())
+            print(i, " loss:  ", loss.item())
 
-        if(i==start and loss.item()<0.7):
-            i = start-1
 
         loss.backward()
         optimizer.step()
@@ -1047,5 +1122,6 @@ def train():
 
 
 if __name__ == '__main__':
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    print("go")
+    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
     train()
