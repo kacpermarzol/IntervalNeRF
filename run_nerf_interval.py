@@ -118,6 +118,7 @@ def render(H, W, K, eps, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
     else:
         # use provided ray batch
         rays_o, rays_d = rays
+        print("hahah ", np.shape(rays_o))
 
     if use_viewdirs:
         # provide ray directions as input
@@ -770,9 +771,17 @@ def train():
 
     # Cast intrinsics to right types
     H, W, focal = hwf
+    H_test, W_test, focal_test = H[1], W[1], focal[1]
+    hwf_test = (H_test, W_test, focal_test)
+    K_test = np.array([
+            [focal_test, 0, 0.5 * W_test],
+            [0, focal_test, 0.5 * H_test],
+            [0, 0, 1]])
+
+
     # H, W = int(H), int(W)
     # hwf = [H, W, focal]
-
+    #
     # if K is None:
     #     print("K nonne")
     #     K = np.array([
@@ -842,22 +851,21 @@ def train():
         # For random ray batching
         H_train = H[i_train]
         W_train = W[i_train]
-        poses_train = poses[i_train, :3, :4]
+        # poses_train = np.array(poses[i_train, :3, :4])
         lossmult2=[]
         print('get rays')
+
         rays = [get_rays_np(H[i], W[i], np.array([
                 [focal[i], 0, 0.5 * W[i]],
                 [0, focal[i], 0.5 * H[i]],
-                [0, 0, 1]])
-                ,p) for i, p in enumerate(poses_train)]  # [N, ro+rd, H, W, 3]
+                [0, 0, 1]]), poses[i, :3, :4]) for i in range(i_train[0] , i_train[-1])]  # [N, ro+rd, H, W, 3]
 
 
-        lossmult2 = np.concatenate([ np.array(np.full((h*w,1), lossmult[i])) for i,(h,w) in enumerate(zip(H_train,W_train))]).flatten().reshape(-1, 1)
 
-        print(lossmult2)
-        print(np.shape(lossmult2))
+        lossmult2 = np.concatenate([np.array(np.full((h*w,1), lossmult[i])) for i,(h,w) in enumerate(zip(H_train,W_train))]).flatten().reshape(-1, 1)
+
+
         print('done, concats')
-
 
         rays_rgb = []
         for i, ray in enumerate(rays):
@@ -865,7 +873,7 @@ def train():
             concatenated_array = np.concatenate((ray,img[None,:]))
             rays_rgb.append(concatenated_array)
 
-        print(rays_rgb[1].shape)
+
         # rays_rgb = np.transpose(rays_rgb, [0, 2, 3, 1, 4])  # [N, H, W, ro+rd+rgb, 3]
         for i, ray in enumerate(rays_rgb):
             rays_rgb[i] = np.transpose(ray, [1,2,0,3])
@@ -873,12 +881,12 @@ def train():
 
         for i, ray in enumerate(rays_rgb):
             rays_rgb[i] = ray.reshape(-1, 3, 3)
-        rays_rgb=np.concatenate(rays_rgb)
-        print(np.shape(rays_rgb))
+        rays_rgb=np.concatenate(rays_rgb, 0)
+        # print(np.shape(rays_rgb))
         rays_rgb = np.array(rays_rgb, dtype=np.float32)
         print('shuffle rays')
 
-        rand_idx = torch.randperm(rays_rgb.shape[0])
+        rand_idx = np.random.permutation(rays_rgb.shape[0])
         # index_array = np.arange(len(lossmult2))
         # np.random.shuffle(index_array)
         rays_rgb = rays_rgb[rand_idx]
@@ -901,7 +909,7 @@ def train():
         lossmult2 = torch.Tensor(lossmult2).to(device)
 
     N_iters = 100001 + 1
-    N_kappa = 10000
+    N_kappa = 20000
     kappa = 0
     print('Begin')
     print('TRAIN views are', i_train)
@@ -927,58 +935,59 @@ def train():
             i_batch += N_rand
             if i_batch >= rays_rgb.shape[0]:
                 print("Shuffle data after an epoch!")
-                rand_idx = torch.randperm(rays_rgb.shape[0])
+                rand_idx = np.random.permutation(rays_rgb.shape[0])
                 rays_rgb = rays_rgb[rand_idx]
                 lossmult2 = lossmult2[rand_idx]
                 i_batch = 0
 
         else:
+            print("wrong")
             # Random from one image
-            img_i = np.random.choice(i_train)
-            target = images[img_i]
-            print('target shape ', target.shape)
-            target = torch.Tensor(target).to(device)
-            pose = poses[img_i, :3, :4]
-
-
-            if N_rand is not None:
-                h,w,f = H[img_i], W[img_i], focal[img_i]
-                k = np.array([[f, 0, 0.5 * w],
-                              [0, f, 0.5 * h],
-                              [0, 0, 1]])
-                rays_o, rays_d = get_rays(h, w, k, torch.Tensor(pose))  # (H, W, 3), (H, W, 3)
-
-                if i < args.precrop_iters:
-                    dH = int(h // 2 * args.precrop_frac)
-                    dW = int(w // 2 * args.precrop_frac)
-                    coords = torch.stack(
-                        torch.meshgrid(
-                            torch.linspace(h // 2 - dH, h // 2 + dH - 1, 2 * dH),
-                            torch.linspace(w // 2 - dW, w // 2 + dW - 1, 2 * dW)
-                        ), -1)
-                    if i == start:
-                        print(
-                            f"[Config] Center cropping of size {2 * dH} x {2 * dW} is enabled until iter {args.precrop_iters}")
-                else:
-                    coords = torch.stack(torch.meshgrid(torch.linspace(0, h - 1, h), torch.linspace(0, w - 1, w)),
-                                         -1)  # (H, W, 2)
-
-                coords = torch.reshape(coords, [-1, 2])  # (H * W, 2)
-                print(coords.shape[0])
-                print(N_rand)
-                select_inds = np.random.choice(coords.shape[0], size=[N_rand], replace=False)  # (N_rand,)
-                # print("N_rand, | ", select_inds.shape)
-                select_coords = coords[select_inds].long()  # (N_rand, 2)
-                # print("N_rand, 2  |", select_coords.shape )
-                rays_o = rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                # print("N_rand, 3  |", rays_o.shape )
-                rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                # print("N_rand, 3  |", rays_d.shape )
-                batch_rays = torch.stack([rays_o, rays_d], 0)
-                target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                # print("N_rand, 3  |", target_s.shape )
-                mask = np.full((N_rand, 1), lossmult[img_i])
-                mask = torch.Tensor(mask).to(device)
+            # img_i = np.random.choice(i_train)
+            # target = images[img_i]
+            # print('target shape ', target.shape)
+            # target = torch.Tensor(target).to(device)
+            # pose = poses[img_i, :3, :4]
+            #
+            #
+            # if N_rand is not None:
+            #     h,w,f = H[img_i], W[img_i], focal[img_i]
+            #     k = np.array([[f, 0, 0.5 * w],
+            #                   [0, f, 0.5 * h],
+            #                   [0, 0, 1]])
+            #     rays_o, rays_d = get_rays(h, w, k, torch.Tensor(pose))  # (H, W, 3), (H, W, 3)
+            #
+            #     if i < args.precrop_iters:
+            #         dH = int(h // 2 * args.precrop_frac)
+            #         dW = int(w // 2 * args.precrop_frac)
+            #         coords = torch.stack(
+            #             torch.meshgrid(
+            #                 torch.linspace(h // 2 - dH, h // 2 + dH - 1, 2 * dH),
+            #                 torch.linspace(w // 2 - dW, w // 2 + dW - 1, 2 * dW)
+            #             ), -1)
+            #         if i == start:
+            #             print(
+            #                 f"[Config] Center cropping of size {2 * dH} x {2 * dW} is enabled until iter {args.precrop_iters}")
+            #     else:
+            #         coords = torch.stack(torch.meshgrid(torch.linspace(0, h - 1, h), torch.linspace(0, w - 1, w)),
+            #                              -1)  # (H, W, 2)
+            #
+            #     coords = torch.reshape(coords, [-1, 2])  # (H * W, 2)
+            #     print(coords.shape[0])
+            #     print(N_rand)
+            #     select_inds = np.random.choice(coords.shape[0], size=[N_rand], replace=False)  # (N_rand,)
+            #     # print("N_rand, | ", select_inds.shape)
+            #     select_coords = coords[select_inds].long()  # (N_rand, 2)
+            #     # print("N_rand, 2  |", select_coords.shape )
+            #     rays_o = rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+            #     # print("N_rand, 3  |", rays_o.shape )
+            #     rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+            #     # print("N_rand, 3  |", rays_d.shape )
+            #     batch_rays = torch.stack([rays_o, rays_d], 0)
+            #     target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+            #     # print("N_rand, 3  |", target_s.shape )
+            #     mask = np.full((N_rand, 1), lossmult[img_i])
+            #     mask = torch.Tensor(mask).to(device)
 
         #####  Core optimization loop  #####
         if i < 1001:
@@ -997,7 +1006,8 @@ def train():
 
         optimizer.zero_grad()
         img_loss_fit = img2mse(rgb, target_s)
-        print("LOSS", img_loss_fit)
+        print(i , " | " , img_loss_fit.item())
+        # print("LOSS", img_loss_fit)
         psnr = mse2psnr(img_loss_fit)
 
         loss_fit = img_loss_fit
@@ -1008,19 +1018,20 @@ def train():
             psnr0 = mse2psnr(img_loss0)
             loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
 
-            loss_fit = loss_fit + 0.1 * img_loss0
-            loss_spec = loss_spec + 0.1 * loss_spec0
+            loss_fit = loss_fit + img_loss0
+            loss_spec = loss_spec + loss_spec0
 
         if i < 1001:
             kappa=1
         elif i < N_kappa:
-            kappa = max(1 - 0.00005 * i, 0.5)
+            kappa = max(1 - 0.00005 * (i-1000), 0.5)
 
-        loss = kappa * loss_fit + (1 - kappa) * loss_spec
-
-        if i < 200:
-            print(i, " loss:  ", loss.item())
-
+        # loss = kappa * loss_fit + (1 - kappa) * loss_spec
+        loss = loss_fit
+        print("  loss | " , loss.item() )
+        # if i < 200:
+        #     print(i, " loss:  ", loss.item())
+        logpsnr=(psnr.item() +psnr0.item() )/2
 
         loss.backward()
         optimizer.step()
@@ -1052,7 +1063,7 @@ def train():
         if i % args.i_video == 0 and i > 0:
             # Turn on testing mode
             with torch.no_grad():
-                rgbs, disps = render_path(render_poses, hwf, K, args.chunk, render_kwargs_test, epsilon)
+                rgbs, disps = render_path(render_poses, hwf_test, K_test, args.chunk, render_kwargs_test, epsilon)
             print('Done, saving', rgbs.shape, disps.shape)
             moviebase = os.path.join(basedir, expname, '{}_spiral_{:06d}_'.format(expname, i))
             imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
@@ -1070,12 +1081,12 @@ def train():
             os.makedirs(testsavedir, exist_ok=True)
             print('test poses shape', poses[i_test].shape)
             with torch.no_grad():
-                render_path(torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk, render_kwargs_test, epsilon,
+                render_path(torch.Tensor(poses[i_test]).to(device), hwf_test, K_test, args.chunk, render_kwargs_test, epsilon,
                             gt_imgs=images[i_test], savedir=testsavedir)
             print('Saved test set')
 
         if i % args.i_print == 0:
-            tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
+            tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {logpsnr}")
         """
             print(expname, i, psnr.numpy(), loss.numpy(), global_step.numpy())
             print('iter time {:.05f}'.format(dt))
