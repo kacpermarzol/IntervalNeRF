@@ -22,6 +22,7 @@ def interval_loss(y, left, right):
     return loss
 
 
+
 # Positional encoding (section 5.1)
 class Embedder:
 

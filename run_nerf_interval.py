@@ -118,7 +118,6 @@ def render(H, W, K, eps, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
     else:
         # use provided ray batch
         rays_o, rays_d = rays
-        print("hahah ", np.shape(rays_o))
 
     if use_viewdirs:
         # provide ray directions as input
@@ -315,6 +314,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     # print("alpha", alpha)
     # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
     weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
+    weights = weights + 1e-10
     rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
 
     depth_map = torch.sum(weights * z_vals, -1)
@@ -507,6 +507,8 @@ def render_rays(ray_batch,
 
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
+
+
     # The function now outputs mu and epsilon
     raw_mu, raw_eps = network_query_fn(pts, viewdirs, network_fn, eps)
 
@@ -531,6 +533,7 @@ def render_rays(ray_batch,
         z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :,
                                                             None]  # [N_rays, N_samples + N_importance, 3]
+
 
         run_fn = network_fn if network_fine is None else network_fine
         raw_mu, raw_eps = network_query_fn(pts, viewdirs, run_fn, eps)
@@ -849,8 +852,8 @@ def train():
     use_batching = not args.no_batching
     if use_batching:
         # For random ray batching
-        H_train = H[i_train]
-        W_train = W[i_train]
+        # H_train = H[i_train]
+        # W_train = W[i_train]
         # poses_train = np.array(poses[i_train, :3, :4])
         lossmult2=[]
         print('get rays')
@@ -858,18 +861,16 @@ def train():
         rays = [get_rays_np(H[i], W[i], np.array([
                 [focal[i], 0, 0.5 * W[i]],
                 [0, focal[i], 0.5 * H[i]],
-                [0, 0, 1]]), poses[i, :3, :4]) for i in range(i_train[0] , i_train[-1])]  # [N, ro+rd, H, W, 3]
+                [0, 0, 1]]), poses[i, :3, :4]) for i in i_train]  # [N, ro+rd, H, W, 3]
 
+        lossmult2 = np.concatenate([np.array(np.full((H[i]*W[i],1), lossmult[i])) for i in i_train]).flatten().reshape(-1, 1)
 
-
-        lossmult2 = np.concatenate([np.array(np.full((h*w,1), lossmult[i])) for i,(h,w) in enumerate(zip(H_train,W_train))]).flatten().reshape(-1, 1)
-
-
+        print(np.shape(lossmult2))
         print('done, concats')
 
         rays_rgb = []
         for i, ray in enumerate(rays):
-            img = images[i]
+            img = images[i_train[i]]
             concatenated_array = np.concatenate((ray,img[None,:]))
             rays_rgb.append(concatenated_array)
 
@@ -882,7 +883,6 @@ def train():
         for i, ray in enumerate(rays_rgb):
             rays_rgb[i] = ray.reshape(-1, 3, 3)
         rays_rgb=np.concatenate(rays_rgb, 0)
-        # print(np.shape(rays_rgb))
         rays_rgb = np.array(rays_rgb, dtype=np.float32)
         print('shuffle rays')
 
@@ -908,7 +908,7 @@ def train():
         rays_rgb = torch.Tensor(rays_rgb).to(device)
         lossmult2 = torch.Tensor(lossmult2).to(device)
 
-    N_iters = 100001 + 1
+    N_iters = 200001 + 1
     N_kappa = 20000
     kappa = 0
     print('Begin')
@@ -927,6 +927,7 @@ def train():
         # Sample random ray batch
         if use_batching:
             # Random over all images
+
             batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
             mask = lossmult2[i_batch:i_batch + N_rand]
             batch = torch.transpose(batch, 0, 1)
@@ -990,10 +991,10 @@ def train():
             #     mask = torch.Tensor(mask).to(device)
 
         #####  Core optimization loop  #####
-        if i < 1001:
-            eps = 0.0
-        elif i < 20000:
-            eps = ((i - 1000) / 20000) * epsilon
+        # if i < 1001:
+        #     eps = 0.0
+        if i < 20000:
+            eps = (i / 20000) * epsilon
         else:
             eps = epsilon
 
@@ -1005,8 +1006,9 @@ def train():
         trans = extras['raw'][..., -1]
 
         optimizer.zero_grad()
-        img_loss_fit = img2mse(rgb, target_s)
-        print(i , " | " , img_loss_fit.item())
+        img_loss_fit = img2mse2(rgb, target_s, mask)
+        # print(i , " fine | " , img_loss_fit.item())
+
         # print("LOSS", img_loss_fit)
         psnr = mse2psnr(img_loss_fit)
 
@@ -1014,21 +1016,23 @@ def train():
         loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
 
         if 'rgb0' in extras:
-            img_loss0 = img2mse(extras['rgb0'], target_s)
+            img_loss0 = img2mse2(extras['rgb0'], target_s, mask)
+            # print("coarse | ", img_loss0.item())
+
             psnr0 = mse2psnr(img_loss0)
             loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
 
             loss_fit = loss_fit + img_loss0
             loss_spec = loss_spec + loss_spec0
 
-        if i < 1001:
-            kappa=1
-        elif i < N_kappa:
-            kappa = max(1 - 0.00005 * (i-1000), 0.5)
 
-        # loss = kappa * loss_fit + (1 - kappa) * loss_spec
-        loss = loss_fit
-        print("  loss | " , loss.item() )
+        if i < N_kappa:
+            kappa = max(1 - 0.000025*i, 0.5)
+
+        loss = kappa * loss_fit + (1 - kappa) * loss_spec
+        # loss = loss_fit
+        # loss = loss_fit
+        # print("loss | " , loss.item() )
         # if i < 200:
         #     print(i, " loss:  ", loss.item())
         logpsnr=(psnr.item() +psnr0.item() )/2
@@ -1134,5 +1138,5 @@ def train():
 
 if __name__ == '__main__':
     print("go")
-    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    torch.set_default_tensor_type('torch.cuda.FloatTensor')
     train()

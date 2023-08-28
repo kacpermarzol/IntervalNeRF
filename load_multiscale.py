@@ -1,6 +1,7 @@
 import os
 import torch
 import numpy as np
+from PIL import Image
 import imageio
 import json
 import torch.nn.functional as F
@@ -56,21 +57,20 @@ def load_multiscale_data(basedir, white_bkgd):
 
         for i, fbase in enumerate(meta['file_path']):
             fname = os.path.join(basedir, fbase)
-            image=imageio.imread(fname)
+            with open(fname, 'rb') as imgin:
+                image = np.array(Image.open(imgin), dtype=np.float32) / 255.
             if white_bkgd:
                 image = image[..., :3] * image[..., -1:] + (1. - image[..., -1:])
-            else:
-                image = image[..., :3]
-            imgs.append(image)
+            imgs.append(image[..., :3])
             all_poses.append(np.array(meta['cam2world'][i]))
             H.append(meta['height'][i])
             W.append(meta['width'][i])
             focal.append(meta['focal'][i])
             lossmult.append([meta['lossmult'][i]])
 
-        imgs = (np.array(imgs, dtype=object) / 255.) # keep all 4 channels (RGBA)
-        for i, img in enumerate(imgs):
-            imgs[i] = img.astype(np.float32)
+        imgs=np.array(imgs, dtype=object)
+        # for i, img in enumerate(imgs):
+        #     imgs[i] = img.astype(np.float32)
         # poses = np.array(poses).astype(np.float32)
         counts.append(counts[-1] + imgs.shape[0])
         all_imgs.append(imgs)
@@ -87,6 +87,7 @@ def load_multiscale_data(basedir, white_bkgd):
     i_split = [np.arange(counts[i], counts[i + 1]) for i in range(3)]
     # all_poses=np.array(all_poses).astype(np.float32)
     imgs = np.concatenate(all_imgs, 0)
+
     # poses = np.concatenate(all_poses, 0)
     return imgs, all_poses, render_poses, [H, W, focal], i_split, lossmult
 
