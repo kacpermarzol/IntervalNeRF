@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm, trange
+import torch.utils.tensorboard as tb
 
 import matplotlib.pyplot as plt
 
@@ -23,7 +24,7 @@ from load_multiscale import load_multiscale_data
 # tqdm.__init__ = partialmethod(tqdm.__init__, disable=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-np.random.seed(0)
+# np.random.seed(1)
 DEBUG = False
 
 
@@ -292,14 +293,14 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
         weights: [num_rays, num_samples]. Weights assigned to each sampled color.
         depth_map: [num_rays]. Estimated distance to object.
     """
-    raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(-act_fn(raw) * dists)
+    raw2alpha = lambda raw, dists, act_fn=F.softplus: 1. - torch.exp(-act_fn(raw) * dists)
 
     dists = z_vals[..., 1:] - z_vals[..., :-1]
     dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[..., :1].shape)], -1)  # [N_rays, N_samples]
 
     dists = dists * torch.norm(rays_d[..., None, :], dim=-1)
 
-    rgb = torch.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]]
+    rgb = torch.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]
     noise = 0.
     if raw_noise_std > 0.:
         noise = torch.randn(raw[..., 3].shape) * raw_noise_std
@@ -310,11 +311,10 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
             noise = np.random.rand(*list(raw[..., 3].shape)) * raw_noise_std
             noise = torch.Tensor(noise)
 
-    alpha = raw2alpha(raw[..., 3] + noise, dists) + 1e-10  # [N_rays, N_samples]
+    alpha = raw2alpha(raw[..., 3] + noise, dists) # [N_rays, N_samples]
     # print("alpha", alpha)
     # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
     weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
-    weights = weights + 1e-10
     rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
 
     depth_map = torch.sum(weights * z_vals, -1)
@@ -350,7 +350,7 @@ def raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std=0, white_
     raw_left, raw_right = raw_left + 1e-10, raw_right + 1e-10  # to ensure all values are non zero in computations
     # print('left' , raw_left)
 
-    raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(
+    raw2alpha = lambda raw, dists, act_fn=F.softplus: 1. - torch.exp(
         -act_fn(raw) * dists)  # the result of this function is always non-negative
 
     dists = z_vals[..., 1:] - z_vals[..., :-1]  # the distances between adjacent samples
@@ -507,12 +507,12 @@ def render_rays(ray_batch,
 
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
-
-
     # The function now outputs mu and epsilon
     raw_mu, raw_eps = network_query_fn(pts, viewdirs, network_fn, eps)
+    assert assert_all_positive(raw_eps), "Not all elements are positive 2 "
 
-    # print("raw_eps:" , raw_mu)
+    # print("raw_eps:" , raw_eps)
+    # print("raw_mu:" , raw_mu)
     raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
 
     # get outputs from the basic nerf
@@ -534,9 +534,11 @@ def render_rays(ray_batch,
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :,
                                                             None]  # [N_rays, N_samples + N_importance, 3]
 
-
         run_fn = network_fn if network_fine is None else network_fine
         raw_mu, raw_eps = network_query_fn(pts, viewdirs, run_fn, eps)
+
+        assert assert_all_positive(raw_eps), "Not all elements are positive 2 "
+
         raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
 
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu, z_vals, rays_d, raw_noise_std, white_bkgd,
@@ -587,7 +589,7 @@ def config_parser():
                         help='channels per layer in fine network')
     parser.add_argument("--N_rand", type=int, default=32 * 32 * 4,
                         help='batch size (number of random rays per gradient step)')
-    parser.add_argument("--lrate", type=float, default=5e-4,
+    parser.add_argument("--lrate", type=float, default=1e-4,
                         help='learning rate')
     parser.add_argument("--lrate_decay", type=int, default=500,  ## to make lrate go from 5e-4 to 5e-6 as in papers
                         help='exponential learning rate decay (in 1000 steps)')
@@ -662,20 +664,22 @@ def config_parser():
                         help='will take every 1/N images as LLFF test set, paper uses 8')
 
     # logging/saving options
-    parser.add_argument("--i_print", type=int, default=100,
+    parser.add_argument("--i_print", type=int, default=10000,
                         help='frequency of console printout and metric loggin')
-    parser.add_argument("--i_img", type=int, default=500,
+    parser.add_argument("--i_img", type=int, default=2000,
                         help='frequency of tensorboard image logging')
-    parser.add_argument("--i_weights", type=int, default=10000,
+    parser.add_argument("--i_weights", type=int, default=25000,
                         help='frequency of weight ckpt saving')
     parser.add_argument("--i_testset", type=int, default=50000,
                         help='frequency of testset saving')
-    parser.add_argument("--i_video", type=int, default=25000,  ###!!!
+    parser.add_argument("--i_video", type=int, default=200000,  ###!!!
                         help='frequency of render_poses video saving')
 
     ### Added eps argument for IntervalNeRF
     parser.add_argument("--eps", type=float, default=0.0,
                         help=' todo ')
+
+    parser.add_argument("--save_every", type=int, default=200, help="The number of steps to run eval on testset")
 
     return parser
 
@@ -774,13 +778,33 @@ def train():
 
     # Cast intrinsics to right types
     H, W, focal = hwf
-    H_test, W_test, focal_test = H[1], W[1], focal[1]
-    hwf_test = (H_test, W_test, focal_test)
-    K_test = np.array([
-            [focal_test, 0, 0.5 * W_test],
-            [0, focal_test, 0.5 * H_test],
-            [0, 0, 1]])
+    H_test, W_test, focal_test = H[0], W[0], focal[0]
+    hwf_800 = (H_test, W_test, focal_test)
+    K_800 = np.array([
+        [focal_test, 0, 0.5 * W_test],
+        [0, focal_test, 0.5 * H_test],
+        [0, 0, 1]])
 
+    H_test, W_test, focal_test = H[1], W[1], focal[1]
+    hwf_400 = (H_test, W_test, focal_test)
+    K_400 = np.array([
+        [focal_test, 0, 0.5 * W_test],
+        [0, focal_test, 0.5 * H_test],
+        [0, 0, 1]])
+
+    H_test, W_test, focal_test = H[2], W[2], focal[2]
+    hwf_200 = (H_test, W_test, focal_test)
+    K_200 = np.array([
+        [focal_test, 0, 0.5 * W_test],
+        [0, focal_test, 0.5 * H_test],
+        [0, 0, 1]])
+
+    H_test, W_test, focal_test = H[3], W[3], focal[3]
+    hwf_100 = (H_test, W_test, focal_test)
+    K_100 = np.array([
+        [focal_test, 0, 0.5 * W_test],
+        [0, focal_test, 0.5 * H_test],
+        [0, 0, 1]])
 
     # H, W = int(H), int(W)
     # hwf = [H, W, focal]
@@ -855,35 +879,56 @@ def train():
         # H_train = H[i_train]
         # W_train = W[i_train]
         # poses_train = np.array(poses[i_train, :3, :4])
-        lossmult2=[]
+        lossmult2 = []
         print('get rays')
 
         rays = [get_rays_np(H[i], W[i], np.array([
-                [focal[i], 0, 0.5 * W[i]],
-                [0, focal[i], 0.5 * H[i]],
-                [0, 0, 1]]), poses[i, :3, :4]) for i in i_train]  # [N, ro+rd, H, W, 3]
+            [focal[i], 0, 0.5 * W[i]],
+            [0, focal[i], 0.5 * H[i]],
+            [0, 0, 1]]), poses[i, :3, :4]) for i in i_train]  # [N, ro+rd, H, W, 3]
 
-        lossmult2 = np.concatenate([np.array(np.full((H[i]*W[i],1), lossmult[i])) for i in i_train]).flatten().reshape(-1, 1)
+        rays_test = [get_rays_np(H[i], W[i], np.array([
+            [focal[i], 0, 0.5 * W[i]],
+            [0, focal[i], 0.5 * H[i]],
+            [0, 0, 1]]), poses[i, :3, :4]) for i in i_test]  # [N, ro+rd, H, W, 3]
+
+        lossmult2 = np.concatenate(
+            [np.array(np.full((H[i] * W[i], 1), lossmult[i])) for i in i_train]).flatten().reshape(-1, 1)
 
         print(np.shape(lossmult2))
         print('done, concats')
 
         rays_rgb = []
+        rays_rgb_test = []
         for i, ray in enumerate(rays):
             img = images[i_train[i]]
-            concatenated_array = np.concatenate((ray,img[None,:]))
+            concatenated_array = np.concatenate((ray, img[None, :]))
             rays_rgb.append(concatenated_array)
 
+        for i, ray in enumerate(rays_test):
+            img = images[i_test[i]]
+            concatenated_array = np.concatenate((ray, img[None, :]))
+            rays_rgb_test.append(concatenated_array)
 
         # rays_rgb = np.transpose(rays_rgb, [0, 2, 3, 1, 4])  # [N, H, W, ro+rd+rgb, 3]
         for i, ray in enumerate(rays_rgb):
-            rays_rgb[i] = np.transpose(ray, [1,2,0,3])
+            rays_rgb[i] = np.transpose(ray, [1, 2, 0, 3])
+
+        for i, ray in enumerate(rays_rgb_test):
+            rays_rgb_test[i] = np.transpose(ray, [1, 2, 0, 3])
         # rays_rgb = [rays_rgb[i] for i in i_train]  # train images only
 
         for i, ray in enumerate(rays_rgb):
             rays_rgb[i] = ray.reshape(-1, 3, 3)
-        rays_rgb=np.concatenate(rays_rgb, 0)
+
+        for i, ray in enumerate(rays_rgb_test):
+            rays_rgb_test[i] = ray.reshape(-1, 3, 3)
+
+        rays_rgb = np.concatenate(rays_rgb, 0)
         rays_rgb = np.array(rays_rgb, dtype=np.float32)
+
+        rays_rgb_test = np.concatenate(rays_rgb_test, 0)
+        rays_rgb_test = np.array(rays_rgb_test, dtype=np.float32)
         print('shuffle rays')
 
         rand_idx = np.random.permutation(rays_rgb.shape[0])
@@ -891,6 +936,11 @@ def train():
         # np.random.shuffle(index_array)
         rays_rgb = rays_rgb[rand_idx]
         lossmult2 = lossmult2[rand_idx]
+
+        rand_idx_test = np.random.permutation(
+            5000000)  # assuming 1 milion iterations with batch size = 4096, this is enough
+        rays_rgb_test = rays_rgb_test[rand_idx_test]
+
         # np.random.shuffle(rays_rgb)
 
         # unique_values, counts = np.unique(lossmult2, return_counts=True)
@@ -899,18 +949,19 @@ def train():
         #     print(f"Number {value} appears {count} times")
         # print('done')
         i_batch = 0
+        i_batch_test = 0
 
-    # Move training data to GPU
+        # Move training data to GPU
     # if use_batching:
     #     images = torch.Tensor(images).to(device)
     poses = torch.Tensor(poses).to(device)
     if use_batching:
+        rays_rgb_test = torch.Tensor(rays_rgb_test).to(device)
         rays_rgb = torch.Tensor(rays_rgb).to(device)
         lossmult2 = torch.Tensor(lossmult2).to(device)
 
-    N_iters = 200001 + 1
-    N_kappa = 20000
-    kappa = 0
+    N_iters = 1000001 + 1
+    kappa = 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
@@ -921,13 +972,13 @@ def train():
 
     epsilon = args.eps
     start = start + 1
+    new_lrate = args.lrate
     for i in trange(start, N_iters):
         time0 = time.time()
 
         # Sample random ray batch
         if use_batching:
             # Random over all images
-
             batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
             mask = lossmult2[i_batch:i_batch + N_rand]
             batch = torch.transpose(batch, 0, 1)
@@ -943,108 +994,72 @@ def train():
 
         else:
             print("wrong")
-            # Random from one image
-            # img_i = np.random.choice(i_train)
-            # target = images[img_i]
-            # print('target shape ', target.shape)
-            # target = torch.Tensor(target).to(device)
-            # pose = poses[img_i, :3, :4]
-            #
-            #
-            # if N_rand is not None:
-            #     h,w,f = H[img_i], W[img_i], focal[img_i]
-            #     k = np.array([[f, 0, 0.5 * w],
-            #                   [0, f, 0.5 * h],
-            #                   [0, 0, 1]])
-            #     rays_o, rays_d = get_rays(h, w, k, torch.Tensor(pose))  # (H, W, 3), (H, W, 3)
-            #
-            #     if i < args.precrop_iters:
-            #         dH = int(h // 2 * args.precrop_frac)
-            #         dW = int(w // 2 * args.precrop_frac)
-            #         coords = torch.stack(
-            #             torch.meshgrid(
-            #                 torch.linspace(h // 2 - dH, h // 2 + dH - 1, 2 * dH),
-            #                 torch.linspace(w // 2 - dW, w // 2 + dW - 1, 2 * dW)
-            #             ), -1)
-            #         if i == start:
-            #             print(
-            #                 f"[Config] Center cropping of size {2 * dH} x {2 * dW} is enabled until iter {args.precrop_iters}")
-            #     else:
-            #         coords = torch.stack(torch.meshgrid(torch.linspace(0, h - 1, h), torch.linspace(0, w - 1, w)),
-            #                              -1)  # (H, W, 2)
-            #
-            #     coords = torch.reshape(coords, [-1, 2])  # (H * W, 2)
-            #     print(coords.shape[0])
-            #     print(N_rand)
-            #     select_inds = np.random.choice(coords.shape[0], size=[N_rand], replace=False)  # (N_rand,)
-            #     # print("N_rand, | ", select_inds.shape)
-            #     select_coords = coords[select_inds].long()  # (N_rand, 2)
-            #     # print("N_rand, 2  |", select_coords.shape )
-            #     rays_o = rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-            #     # print("N_rand, 3  |", rays_o.shape )
-            #     rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-            #     # print("N_rand, 3  |", rays_d.shape )
-            #     batch_rays = torch.stack([rays_o, rays_d], 0)
-            #     target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-            #     # print("N_rand, 3  |", target_s.shape )
-            #     mask = np.full((N_rand, 1), lossmult[img_i])
-            #     mask = torch.Tensor(mask).to(device)
 
         #####  Core optimization loop  #####
-        # if i < 1001:
-        #     eps = 0.0
+
         if i < 20000:
             eps = (i / 20000) * epsilon
+            if eps != 0:
+                kappa = max(1 - 0.000025 * i, 0.5)
         else:
             eps = epsilon
 
-        # print(batch_rays)
+
+        # if i < N_kappa:
+        #     kappa = max(1 - 0.000025 * i, 0.5)
+
         rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays,
                                                                      verbose=i < 10, retraw=True,
                                                                      **render_kwargs_train)
-        # print('rgb ', rgb, '\n rgb_l ', rgb_map_left, '\n rgb_r ', rgb_map_right )
-        trans = extras['raw'][..., -1]
+        # trans = extras['raw'][..., -1]
 
         optimizer.zero_grad()
-        img_loss_fit = img2mse2(rgb, target_s, mask)
+        # loss_fit = img2mse2(rgb, target_s, mask)
+        loss_fit = img2mse(rgb, target_s)
         # print(i , " fine | " , img_loss_fit.item())
 
-        # print("LOSS", img_loss_fit)
-        psnr = mse2psnr(img_loss_fit)
+        psnr = mse2psnr(loss_fit)
+        logger.add_scalar('train/fine_psnr', psnr, global_step=i)
 
-        loss_fit = img_loss_fit
         loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
 
         if 'rgb0' in extras:
-            img_loss0 = img2mse2(extras['rgb0'], target_s, mask)
+            # img_loss0 = img2mse2(extras['rgb0'], target_s, mask)
+            img_loss0 = img2mse(extras['rgb0'], target_s)
             # print("coarse | ", img_loss0.item())
 
             psnr0 = mse2psnr(img_loss0)
+            logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
+
             loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
 
             loss_fit = loss_fit + img_loss0
             loss_spec = loss_spec + loss_spec0
 
-
-        if i < N_kappa:
-            kappa = max(1 - 0.000025*i, 0.5)
-
         loss = kappa * loss_fit + (1 - kappa) * loss_spec
         # loss = loss_fit
-        # loss = loss_fit
+
+        logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
+
         # print("loss | " , loss.item() )
         # if i < 200:
         #     print(i, " loss:  ", loss.item())
-        logpsnr=(psnr.item() +psnr0.item() )/2
+        logpsnr = (psnr.item() + psnr0.item()) / 2
+        logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
+        logger.add_scalar('train/lr', new_lrate, global_step=i)
 
         loss.backward()
         optimizer.step()
 
         # NOTE: IMPORTANT!
         ###   update learning rate   ###
+
         decay_rate = 0.1
         decay_steps = args.lrate_decay * 1000
-        new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
+        if i < 5000:
+            new_lrate = 1e-4 * np.exp((np.log(5) - np.log(1)) / 5000 * global_step)
+        else:
+            new_lrate = 5e-4 * (decay_rate ** ((global_step - 5000) / decay_steps))
         for param_group in optimizer.param_groups:
             param_group['lr'] = new_lrate
         ################################
@@ -1052,6 +1067,40 @@ def train():
         dt = time.time() - time0
         # print(f"Step: {global_step}, Loss: {loss}, Time: {dt}")
         #####           end            #####
+
+        if i % args.save_every == 0:
+            batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand]  # [B, 2+1, 3*?]
+            i_batch_test += N_rand
+            batch_test = torch.transpose(batch_test, 0, 1)
+            batch_rays_test, target_s_test = batch_test[:2], batch_test[2]
+            with torch.no_grad():  ### WHAT EPSLION HERE?
+                rgb, _, _, _, _, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_test,
+                                                 verbose=i < 10, retraw=True, **render_kwargs_test)
+                loss_fit = img2mse(rgb, target_s_test)
+                psnr = mse2psnr(loss_fit)
+                logger.add_scalar('eval/fine_psnr', psnr, global_step=i)
+
+                if 'rgb0' in extras:
+                    img_loss0 = img2mse(extras['rgb0'], target_s_test)
+                    psnr0 = mse2psnr(img_loss0)
+                    logger.add_scalar('eval/coarse_psnr', psnr0, global_step=i)
+
+                    avg_psnr = (psnr + psnr0) / 2
+                    logger.add_scalar('eval/avg_psnr', avg_psnr, global_step=i)
+
+                rgb, _, _, _, _, extras = render(1, 1, 1, 0, chunk=args.chunk, rays=batch_rays_test,
+                                                 verbose=i < 10, retraw=True, **render_kwargs_test)
+                loss_fit = img2mse(rgb, target_s_test)
+                psnr = mse2psnr(loss_fit)
+                logger.add_scalar('eval/fine_psnr_eps0', psnr, global_step=i)
+
+                if 'rgb0' in extras:
+                    img_loss0 = img2mse(extras['rgb0'], target_s_test)
+                    psnr0 = mse2psnr(img_loss0)
+                    logger.add_scalar('eval/coarse_psnr_eps0', psnr0, global_step=i)
+
+                    avg_psnr = (psnr + psnr0) / 2
+                    logger.add_scalar('eval/avg_psnr_eps0', avg_psnr, global_step=i)
 
         # Rest is logging
         if i % args.i_weights == 0:
@@ -1067,11 +1116,20 @@ def train():
         if i % args.i_video == 0 and i > 0:
             # Turn on testing mode
             with torch.no_grad():
-                rgbs, disps = render_path(render_poses, hwf_test, K_test, args.chunk, render_kwargs_test, epsilon)
-            print('Done, saving', rgbs.shape, disps.shape)
+                rgbs800, disps800 = render_path(render_poses, hwf_800, K_800, args.chunk, render_kwargs_test, epsilon)
+                print('Done, saving', rgbs800.shape, disps800.shape)
+                rgbs400, disps400 = render_path(render_poses, hwf_400, K_400, args.chunk, render_kwargs_test, epsilon)
+                print('Done, saving', rgbs400.shape, disps400.shape)
+                rgbs200, disps200 = render_path(render_poses, hwf_200, K_200, args.chunk, render_kwargs_test, epsilon)
+                print('Done, saving', rgbs200.shape, disps200.shape)
+                rgbs100, disps100 = render_path(render_poses, hwf_100, K_100, args.chunk, render_kwargs_test, epsilon)
+                print('Done, saving', rgbs100.shape, disps100.shape)
             moviebase = os.path.join(basedir, expname, '{}_spiral_{:06d}_'.format(expname, i))
-            imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
-            imageio.mimwrite(moviebase + 'disp.mp4', to8b(disps / np.max(disps)), fps=30, quality=8)
+            imageio.mimwrite(moviebase + 'rgb800.mp4', to8b(rgbs800), fps=30, quality=8)
+            imageio.mimwrite(moviebase + 'rgb400.mp4', to8b(rgbs400), fps=30, quality=8)
+            imageio.mimwrite(moviebase + 'rgb200.mp4', to8b(rgbs200), fps=30, quality=8)
+            imageio.mimwrite(moviebase + 'rgb100.mp4', to8b(rgbs100), fps=30, quality=8)
+            # imageio.mimwrite(moviebase + 'disp.mp4', to8b(disps / np.max(disps)), fps=30, quality=8)
 
             # if args.use_viewdirs:
             #     render_kwargs_test['c2w_staticcam'] = render_poses[0][:3,:4]
@@ -1080,14 +1138,30 @@ def train():
             #     render_kwargs_test['c2w_staticcam'] = None
             #     imageio.mimwrite(moviebase + 'rgb_still.mp4', to8b(rgbs_still), fps=30, quality=8)
 
-        if i % args.i_testset == 0 and i > 0:
-            testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
-            os.makedirs(testsavedir, exist_ok=True)
-            print('test poses shape', poses[i_test].shape)
+        # if i % args.i_testset == 0 and i > 0:
+        #     testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
+        #     os.makedirs(testsavedir, exist_ok=True)
+        #     print('test poses shape', poses[i_test].shape)
+        #     with torch.no_grad():
+        #         render_path(torch.Tensor(poses[i_test]).to(device), hwf_test, K_test, args.chunk, render_kwargs_test, epsilon,
+        #                     gt_imgs=images[i_test], savedir=testsavedir)
+        #     print('Saved test set')
+
+        if i % args.i_img == 0:
+            img_i = i_val[45]
+            hh, ww, ff = H[img_i], W[img_i], focal[img_i]
+            kk = np.array([[ff, 0, 0.5 * ww],
+                           [0, ff, 0.5 * hh],
+                           [0, 0, 1]])
+            pose = poses[img_i, :3, :4]
             with torch.no_grad():
-                render_path(torch.Tensor(poses[i_test]).to(device), hwf_test, K_test, args.chunk, render_kwargs_test, epsilon,
-                            gt_imgs=images[i_test], savedir=testsavedir)
-            print('Saved test set')
+                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=eps, chunk=args.chunk, c2w=pose,
+                                            **render_kwargs_test)
+                logger.add_image('image', rgb, dataformats='HWC', global_step=i)
+
+                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose,
+                                            **render_kwargs_test)
+                logger.add_image('image_eps0', rgb, dataformats='HWC', global_step=i)
 
         if i % args.i_print == 0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {logpsnr}")
@@ -1138,5 +1212,8 @@ def train():
 
 if __name__ == '__main__':
     print("go")
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    logger = tb.SummaryWriter()
+    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
     train()
+
+    logger.close()
