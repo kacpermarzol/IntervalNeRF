@@ -5,7 +5,6 @@ from PIL import Image
 import imageio
 import json
 import torch.nn.functional as F
-import cv2
 
 trans_t = lambda t : torch.Tensor([
     [1,0,0,0],

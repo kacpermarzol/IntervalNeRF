@@ -32,7 +32,6 @@ def batchify(fn, chunk, epsilon):
     """Constructs a version of 'fn' that applies to smaller batches.
     """
 
-    ##Batchify now outputs mu and epsilon
     if chunk is None:
         return fn
 
@@ -51,7 +50,6 @@ def batchify(fn, chunk, epsilon):
 
 
 def run_network(inputs, viewdirs, fn, eps, embed_fn, embeddirs_fn, netchunk=1024 * 32):
-    # Added argument eps and now the function outputs mu and epsilon
     """Prepares inputs and applies network 'fn'.
     """
     inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
@@ -311,8 +309,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
             noise = np.random.rand(*list(raw[..., 3].shape)) * raw_noise_std
             noise = torch.Tensor(noise)
 
-    alpha = raw2alpha(raw[..., 3] + noise, dists) # [N_rays, N_samples]
-    # print("alpha", alpha)
+    alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
     # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
     weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
     rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
@@ -347,35 +344,33 @@ def raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std=0, white_
         depth_map_tight: ^^^
     """
 
-    raw_left, raw_right = raw_left + 1e-10, raw_right + 1e-10  # to ensure all values are non zero in computations
-    # print('left' , raw_left)
-
     raw2alpha = lambda raw, dists, act_fn=F.softplus: 1. - torch.exp(
         -act_fn(raw) * dists)  # the result of this function is always non-negative
 
     dists = z_vals[..., 1:] - z_vals[..., :-1]  # the distances between adjacent samples
-    dists = torch.cat([dists, torch.full(dists[..., :1].shape, 1e10)], -1)  # changed second arg in torch cat
-    dists = dists * torch.norm(rays_d[..., None, :], dim=-1)  # whyyy?
+    # dists = torch.cat([dists, torch.full(dists[..., :1].shape, 1e10)], -1)  # changed second arg in torch cat
+    dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[..., :1].shape)], -1)  # [N_rays, N_samples]
+
+    dists = dists * torch.norm(rays_d[..., None, :], dim=-1)
 
     # sigmoid is a monotonic function of one variable, so calculating rgb left and right is as follows:
     # (https://en.wikipedia.org/wiki/Interval_arithmetic     - section "Elementary functions")
-    rgb_left = torch.sigmoid(raw_left[..., :3]) + 1e-10  # [N_rays, N_samples, 3]
-    rgb_right = torch.sigmoid(raw_right[..., :3]) + 1e-10  # [N_rays, N_samples, 3]
+    rgb_left = torch.sigmoid(raw_left[..., :3]) + 1e-20  # [N_rays, N_samples, 3]
+    rgb_right = torch.sigmoid(raw_right[..., :3]) + 1e-20  # [N_rays, N_samples, 3]
 
     noise = 0.
-    # ! should noise have different values for left and right?
-    if raw_noise_std > 0.:
-        noise = torch.randn(raw_left[..., 3].shape) * raw_noise_std
-
-        # Overwrite randomly sampled data if pytest
-        if pytest:
-            np.random.seed(0)
-            noise = np.random.rand(*list(raw_left[..., 3].shape)) * raw_noise_std
-            noise = torch.Tensor(noise)
+    # if raw_noise_std > 0.:
+    #     noise = torch.randn(raw_left[..., 3].shape) * raw_noise_std
+    #
+    #     # Overwrite randomly sampled data if pytest
+    #     if pytest:
+    #         np.random.seed(0)
+    #         noise = np.random.rand(*list(raw_left[..., 3].shape)) * raw_noise_std
+    #         noise = torch.Tensor(noise)
 
     # because dist is not an interval
-    alpha_left = raw2alpha(raw_left[..., 3] + noise, dists) + 1e-10  # [N_rays, N_samples]
-    alpha_right = raw2alpha(raw_right[..., 3] + noise, dists) + 1e-10  # [N_rays, N_samples]
+    alpha_left = raw2alpha(raw_left[..., 3] + noise, dists)   # [N_rays, N_samples]
+    alpha_right = raw2alpha(raw_right[..., 3] + noise, dists)   # [N_rays, N_samples]
 
     # assume sigma is denoted with s, delta with d, alpha with a
 
@@ -387,26 +382,24 @@ def raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std=0, white_
     # = exp(-s_1*d_1) * exp(-s_2*d_2) * ... * exp(-s_{i-1} * d_{i-1})) =
     # = (1-a_1) * (1-a_2) * ... * (1-a_{i-1})
 
-    T_left = torch.cumprod(torch.cat([torch.ones((alpha_left.shape[0], 1)), 1. - alpha_left + 1e-10], -1), -1)[:,
-             :-1] + 1e-10
-    T_right = torch.cumprod(torch.cat([torch.ones((alpha_right.shape[0], 1)), 1. - alpha_right + 1e-10], -1), -1)[:,
-              :-1] + 1e-10
+    T_left = torch.cumprod(torch.cat([torch.ones((alpha_left.shape[0], 1)), 1. - alpha_left + 1e-10], -1), -1)[:, :-1]
+    T_right = torch.cumprod(torch.cat([torch.ones((alpha_right.shape[0], 1)), 1. - alpha_right + 1e-10], -1), -1)[:,:-1]
 
-    assert assert_all_nonnegative(alpha_left), "Not all elements are positive (alpha_left)"
-    assert assert_all_nonnegative(alpha_right), "Not all elements are positive (alpha_right)"
-    assert assert_all_nonnegative(T_left), "Not all elements are positive (T_left)"
-    assert assert_all_nonnegative(T_right), "Not all elements are positive (T_right))"
+    assert assert_all_nonnegative(alpha_left), "Not all elements are nonnegative (alpha_left)"
+    assert assert_all_nonnegative(alpha_right), "Not all elements are nonnegative (alpha_right)"
+    assert assert_all_nonnegative(T_left), "Not all elements are nonnegative (T_left)"
+    assert assert_all_nonnegative(T_right), f"Not all elements are nonnegative (T_right)"
 
     # After we have asserted that all of the elements in tensors are non-negative, we can use the simplified
-    # version of interval multiplication, i.e [a,b] * [x,y] == [a*x, b,y]
+    # version of interval multiplication, i.e [a,b] * [x,y] == [a*x, b*y]
 
-    weights_left = alpha_left * T_left + 1e-10
-    weights_right = alpha_right * T_right + 1e-10
+    weights_left = alpha_left * T_left + 1e-20
+    weights_right = alpha_right * T_right + 1e-20
 
-    assert assert_all_nonnegative(weights_left), "Not all elements are positive (weights_left)"
-    assert assert_all_nonnegative(weights_right), "Not all elements are positive (weights_right)"
-    assert assert_all_nonnegative(rgb_left), "Not all elements are positive (rgb_left)"
-    assert assert_all_nonnegative(rgb_right), "Not all elements are positive (rgb_right)"
+    assert assert_all_nonnegative(weights_left), "Not all elements are nonnegative (weights_left)"
+    assert assert_all_nonnegative(weights_right), "Not all elements are nonnegative (weights_right)"
+    assert assert_all_nonnegative(rgb_left), "Not all elements are nonnegative (rgb_left)"
+    assert assert_all_nonnegative(rgb_right), "Not all elements are nonnegative (rgb_right)"
 
     # Again we've checked that all elements of the tensors needed for calculating the rgb map are non-negative, hence we
     # use simplified multiplication formula
@@ -507,12 +500,8 @@ def render_rays(ray_batch,
 
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
-    # The function now outputs mu and epsilon
     raw_mu, raw_eps = network_query_fn(pts, viewdirs, network_fn, eps)
-    assert assert_all_positive(raw_eps), "Not all elements are positive 2 "
 
-    # print("raw_eps:" , raw_eps)
-    # print("raw_mu:" , raw_mu)
     raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
 
     # get outputs from the basic nerf
@@ -536,8 +525,6 @@ def render_rays(ray_batch,
 
         run_fn = network_fn if network_fine is None else network_fine
         raw_mu, raw_eps = network_query_fn(pts, viewdirs, run_fn, eps)
-
-        assert assert_all_positive(raw_eps), "Not all elements are positive 2 "
 
         raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
 
@@ -695,13 +682,6 @@ def train():
         print("multiscale")
         images, poses, render_poses, hwf, i_split, lossmult = load_multiscale_data(args.datadir, args.white_bkgd)
         i_train, i_val, i_test = i_split
-        print(images.dtype)
-        print("images", np.shape(images[1]))
-        print("poses", np.shape(poses))
-        # print("h", np.shape(h))
-        # print("w", np.shape(w))
-        # print("f", np.shape(f))
-        print('lossmult', np.shape(lossmult))
 
         near = 2.
         far = 6.
@@ -776,7 +756,8 @@ def train():
         print('Unknown dataset type', args.dataset_type, 'exiting')
         return
 
-    # Cast intrinsics to right types
+
+    #for generating videos with different resoultions
     H, W, focal = hwf
     H_test, W_test, focal_test = H[0], W[0], focal[0]
     hwf_800 = (H_test, W_test, focal_test)
@@ -805,17 +786,6 @@ def train():
         [focal_test, 0, 0.5 * W_test],
         [0, focal_test, 0.5 * H_test],
         [0, 0, 1]])
-
-    # H, W = int(H), int(W)
-    # hwf = [H, W, focal]
-    #
-    # if K is None:
-    #     print("K nonne")
-    #     K = np.array([
-    #         [focal, 0, 0.5 * W],
-    #         [0, focal, 0.5 * H],
-    #         [0, 0, 1]
-    #     ])
 
     if args.render_test:
         render_poses = np.array(poses[i_test])
@@ -876,10 +846,6 @@ def train():
     use_batching = not args.no_batching
     if use_batching:
         # For random ray batching
-        # H_train = H[i_train]
-        # W_train = W[i_train]
-        # poses_train = np.array(poses[i_train, :3, :4])
-        lossmult2 = []
         print('get rays')
 
         rays = [get_rays_np(H[i], W[i], np.array([
@@ -895,7 +861,6 @@ def train():
         lossmult2 = np.concatenate(
             [np.array(np.full((H[i] * W[i], 1), lossmult[i])) for i in i_train]).flatten().reshape(-1, 1)
 
-        print(np.shape(lossmult2))
         print('done, concats')
 
         rays_rgb = []
@@ -910,13 +875,11 @@ def train():
             concatenated_array = np.concatenate((ray, img[None, :]))
             rays_rgb_test.append(concatenated_array)
 
-        # rays_rgb = np.transpose(rays_rgb, [0, 2, 3, 1, 4])  # [N, H, W, ro+rd+rgb, 3]
         for i, ray in enumerate(rays_rgb):
             rays_rgb[i] = np.transpose(ray, [1, 2, 0, 3])
 
         for i, ray in enumerate(rays_rgb_test):
             rays_rgb_test[i] = np.transpose(ray, [1, 2, 0, 3])
-        # rays_rgb = [rays_rgb[i] for i in i_train]  # train images only
 
         for i, ray in enumerate(rays_rgb):
             rays_rgb[i] = ray.reshape(-1, 3, 3)
@@ -932,8 +895,7 @@ def train():
         print('shuffle rays')
 
         rand_idx = np.random.permutation(rays_rgb.shape[0])
-        # index_array = np.arange(len(lossmult2))
-        # np.random.shuffle(index_array)
+
         rays_rgb = rays_rgb[rand_idx]
         lossmult2 = lossmult2[rand_idx]
 
@@ -941,13 +903,6 @@ def train():
             5000000)  # assuming 1 milion iterations with batch size = 4096, this is enough
         rays_rgb_test = rays_rgb_test[rand_idx_test]
 
-        # np.random.shuffle(rays_rgb)
-
-        # unique_values, counts = np.unique(lossmult2, return_counts=True)
-        # # Print the unique values and their counts
-        # for value, count in zip(unique_values, counts):
-        #     print(f"Number {value} appears {count} times")
-        # print('done')
         i_batch = 0
         i_batch_test = 0
 
@@ -967,9 +922,6 @@ def train():
     print('TEST views are', i_test)
     print('VAL views are', i_val)
 
-    # Summary writers
-    # writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
-
     epsilon = args.eps
     start = start + 1
     new_lrate = args.lrate
@@ -981,6 +933,10 @@ def train():
             # Random over all images
             batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
             mask = lossmult2[i_batch:i_batch + N_rand]
+            # for making the loss like in MipNeRF:
+            # "loss of each pixel by the area
+            # of that pixel’s footprint in the original image (the loss for pixels from the 1/4 images is scaled by 16, etc)
+            # so that the few low-resolution pixels have comparable influence to the many high-resolution pixels. "
             batch = torch.transpose(batch, 0, 1)
             batch_rays, target_s = batch[:2], batch[2]
 
@@ -993,57 +949,69 @@ def train():
                 i_batch = 0
 
         else:
-            print("wrong")
+            print("not implemented")
 
         #####  Core optimization loop  #####
 
-        if i < 20000:
-            eps = (i / 20000) * epsilon
-            if eps != 0:
-                kappa = max(1 - 0.000025 * i, 0.5)
+        # kappa is a hyperparameter that governs the relative weight of satisfying the interval loss versus fit loss
+        # with warmup
+
+        if i < 2500:
+            eps = 0
+            kappa = 1
+        elif i < 22500:
+            eps = ((i - 2499) / 20000) * epsilon
+            kappa = max(1 - 0.000025 * (i - 2499), 0.5)
         else:
             eps = epsilon
+            kappa = 0.5
 
-
-        # if i < N_kappa:
-        #     kappa = max(1 - 0.000025 * i, 0.5)
+        # without warmup
+        # if i < 20000:
+        #     eps = (i / 20000) * epsilon
+        #     if eps != 0:
+        #         kappa = max(1 - 0.000025 * i, 0.5)
+        # else:
+        #     eps = epsilon
+        #     kappa = 0.5
 
         rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays,
                                                                      verbose=i < 10, retraw=True,
                                                                      **render_kwargs_train)
         # trans = extras['raw'][..., -1]
+        if i % 1000 == 0:
+            print("target : ", target_s[0:3])
+            print("rgb : ", rgb[0:3])
+            print("rgb_left : ", rgb_map_left[0:3])
+            print("rgb_right : ", rgb_map_right[0:3], '\n')
 
         optimizer.zero_grad()
-        # loss_fit = img2mse2(rgb, target_s, mask)
-        loss_fit = img2mse(rgb, target_s)
-        # print(i , " fine | " , img_loss_fit.item())
+        # loss_fit = img2mse(rgb, target_s)
+        loss_fit = img2mse2(rgb, target_s, mask)
+        loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right, mask)
 
         psnr = mse2psnr(loss_fit)
-        logger.add_scalar('train/fine_psnr', psnr, global_step=i)
 
-        loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
+        logger.add_scalar('train/fine_psnr', psnr, global_step=i)
+        logger.add_scalar('train/fine_loss_spec', loss_spec, global_step=i)
 
         if 'rgb0' in extras:
-            # img_loss0 = img2mse2(extras['rgb0'], target_s, mask)
-            img_loss0 = img2mse(extras['rgb0'], target_s)
-            # print("coarse | ", img_loss0.item())
+            # img_loss0 = img2mse(extras['rgb0'], target_s)
+            img_loss0 = img2mse2(extras['rgb0'], target_s, mask)
+            loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'], mask)
 
             psnr0 = mse2psnr(img_loss0)
-            logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
 
-            loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
+            logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
+            logger.add_scalar('train/coarse_loss_spec', loss_spec0, global_step=i)
 
             loss_fit = loss_fit + img_loss0
             loss_spec = loss_spec + loss_spec0
 
         loss = kappa * loss_fit + (1 - kappa) * loss_spec
-        # loss = loss_fit
 
         logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
 
-        # print("loss | " , loss.item() )
-        # if i < 200:
-        #     print(i, " loss:  ", loss.item())
         logpsnr = (psnr.item() + psnr0.item()) / 2
         logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
         logger.add_scalar('train/lr', new_lrate, global_step=i)
@@ -1056,8 +1024,8 @@ def train():
 
         decay_rate = 0.1
         decay_steps = args.lrate_decay * 1000
-        if i < 5000:
-            new_lrate = 1e-4 * np.exp((np.log(5) - np.log(1)) / 5000 * global_step)
+        if i < 10000:
+            new_lrate = 1e-4 * np.exp((np.log(5) - np.log(1)) / 10000 * global_step)
         else:
             new_lrate = 5e-4 * (decay_rate ** ((global_step - 5000) / decay_steps))
         for param_group in optimizer.param_groups:
@@ -1073,7 +1041,7 @@ def train():
             i_batch_test += N_rand
             batch_test = torch.transpose(batch_test, 0, 1)
             batch_rays_test, target_s_test = batch_test[:2], batch_test[2]
-            with torch.no_grad():  ### WHAT EPSLION HERE?
+            with torch.no_grad():
                 rgb, _, _, _, _, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_test,
                                                  verbose=i < 10, retraw=True, **render_kwargs_test)
                 loss_fit = img2mse(rgb, target_s_test)
@@ -1211,9 +1179,7 @@ def train():
 
 
 if __name__ == '__main__':
-    print("go")
     logger = tb.SummaryWriter()
-    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    torch.set_default_tensor_type('torch.cuda.FloatTensor')
     train()
-
     logger.close()
