@@ -659,7 +659,7 @@ def config_parser():
                         help='frequency of weight ckpt saving')
     parser.add_argument("--i_testset", type=int, default=50000,
                         help='frequency of testset saving')
-    parser.add_argument("--i_video", type=int, default=200000,  ###!!!
+    parser.add_argument("--i_video", type=int, default=250000,  ###!!!
                         help='frequency of render_poses video saving')
 
     ### Added eps argument for IntervalNeRF
@@ -674,6 +674,7 @@ def config_parser():
 def train():
     parser = config_parser()
     args = parser.parse_args()
+    logger = tb.SummaryWriter(log_dir=f"runs/{args.expname}")
     print(args.eps)
     # Load data
     K = None
@@ -956,14 +957,18 @@ def train():
         # kappa is a hyperparameter that governs the relative weight of satisfying the interval loss versus fit loss
         # with warmup
 
-        if i < 2500:
+        if i < 80000:
             eps = 0
-            kappa = 1
-        elif i < 22500:
-            eps = ((i - 2499) / 20000) * epsilon
-            kappa = max(1 - 0.000025 * (i - 2499), 0.5)
+        elif i < 130000:
+            eps = ((i - 79999) / 50000) * epsilon
         else:
             eps = epsilon
+
+        if i < 80000:
+            kappa = 1
+        elif i < 180000:
+            kappa = max(1 - 0.000005 * (i - 79999), 0.5)
+        else:
             kappa = 0.5
 
         # without warmup
@@ -986,9 +991,10 @@ def train():
             print("rgb_right : ", rgb_map_right[0:3], '\n')
 
         optimizer.zero_grad()
-        # loss_fit = img2mse(rgb, target_s)
-        loss_fit = img2mse2(rgb, target_s, mask)
-        loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right, mask)
+        loss_fit = img2mse(rgb, target_s)
+        # loss_fit = img2mse2(rgb, target_s, mask)
+        loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
+        # loss_spec = interval_loss2(target_s, rgb_map_left, rgb_map_right, mask)
 
         psnr = mse2psnr(loss_fit)
 
@@ -996,9 +1002,10 @@ def train():
         logger.add_scalar('train/fine_loss_spec', loss_spec, global_step=i)
 
         if 'rgb0' in extras:
-            # img_loss0 = img2mse(extras['rgb0'], target_s)
-            img_loss0 = img2mse2(extras['rgb0'], target_s, mask)
-            loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'], mask)
+            img_loss0 = img2mse(extras['rgb0'], target_s)
+            # img_loss0 = img2mse2(extras['rgb0'], target_s, mask)
+            # loss_spec0 = interval_loss2(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'], mask)
+            loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
 
             psnr0 = mse2psnr(img_loss0)
 
@@ -1176,10 +1183,9 @@ def train():
         """
 
         global_step += 1
+    logger.close()
 
 
 if __name__ == '__main__':
-    logger = tb.SummaryWriter()
     torch.set_default_tensor_type('torch.cuda.FloatTensor')
     train()
-    logger.close()
