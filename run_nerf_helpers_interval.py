@@ -16,13 +16,12 @@ def img2mse2(rgb, target, mask):
 
 # interval
 def interval_loss(y, left, right):
-    loss = torch.max(torch.abs(y - left), torch.abs(y - right))
-    loss = torch.mean(loss, dim=-1)
-    loss = torch.mean(loss, dim=0)
+    loss = torch.max((y - left)**2, (y - right)**2)
+    loss = torch.mean(loss)
     return loss
 
 def interval_loss2(y, left, right, mask):
-    loss = torch.max(torch.abs(y - left), torch.abs(y - right))
+    loss = torch.max((y - left)**2, (y - right)**2)
     loss = loss * mask
     loss = torch.sum(loss) / mask.sum()
     return loss

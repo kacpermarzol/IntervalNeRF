@@ -576,7 +576,7 @@ def config_parser():
                         help='channels per layer in fine network')
     parser.add_argument("--N_rand", type=int, default=32 * 32 * 4,
                         help='batch size (number of random rays per gradient step)')
-    parser.add_argument("--lrate", type=float, default=1e-4,
+    parser.add_argument("--lrate", type=float, default=5e-4,
                         help='learning rate')
     parser.add_argument("--lrate_decay", type=int, default=500,  ## to make lrate go from 5e-4 to 5e-6 as in papers
                         help='exponential learning rate decay (in 1000 steps)')
@@ -667,6 +667,8 @@ def config_parser():
                         help=' todo ')
 
     parser.add_argument("--save_every", type=int, default=200, help="The number of steps to run eval on testset")
+
+    parser.add_argument("--metrics_only", type=bool, default=False, help="to only calculate metrics")
 
     return parser
 
@@ -819,6 +821,7 @@ def train():
     # Move testing data to GPU
     render_poses = torch.Tensor(render_poses).to(device)
 
+
     # Short circuit if only rendering out from trained model
     if args.render_only:
         print('RENDER ONLY')
@@ -916,6 +919,76 @@ def train():
         rays_rgb = torch.Tensor(rays_rgb).to(device)
         lossmult2 = torch.Tensor(lossmult2).to(device)
 
+
+    # Short circuit if only calculating metrics
+    if args.metrics_only:
+        psnr800 = []
+        psnr800eps0 = []
+        psnr400 = []
+        psnr400eps0 = []
+        psnr200 = []
+        psnr200eps0 = []
+        psnr100 = []
+        psnr100eps0 = []
+
+        print('METRICS ONLY')
+        with torch.no_grad():
+            for i in i_test:
+                img_i = i_test[i]
+                hh, ww, ff = H[img_i], W[img_i], focal[img_i]
+                kk = np.array([[ff, 0, 0.5 * ww],
+                               [0, ff, 0.5 * hh],
+                               [0, 0, 1]])
+                pose = poses[img_i, :3, :4]
+
+                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=args.epsilon, chunk=args.chunk, c2w=pose,
+                                                **render_kwargs_test)
+
+                psnr = mse2psnr(img2mse(rgb, images[img_i]))
+                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose,
+                                                **render_kwargs_test)
+
+                psnr0 = mse2psnr(img2mse(rgb, images[img_i]))
+
+
+                if lossmult[img_i]==1:
+                    psnr800.append(psnr)
+                    psnr800eps0.append(psnr0)
+                elif lossmult[img_i]==4:
+                    psnr400.append(psnr)
+                    psnr400eps0.append(psnr)
+                elif lossmult[img_i]==16:
+                    psnr200.append(psnr)
+                    psnr200eps0.append(psnr)
+                elif lossmult[img_i]==64:
+                    psnr100.append(psnr)
+                    psnr100eps0.append(psnr)
+                else:
+                    print("something went wrong")
+
+
+            print("_-_-_-_-_-_-_-_")
+            print("PSNR")
+            print("_-_-_-_-_-_-_-_")
+
+            print(f'EPS {args.epsilon}')
+            print(f'Full res {np.mean(psnr800)}')
+            print(f'1/2 res {np.mean(psnr400)}')
+            print(f'1/4 res {np.mean(psnr200)}')
+            print(f'1/16 res {np.mean(psnr100)}')
+
+            print('\n _-_-_-_-_-_-_-_ \n')
+            print("EPS 0")
+            print(f'Full res {np.mean(psnr800eps0)}')
+            print(f'1/2 res {np.mean(psnr400eps0)}')
+            print(f'1/4 res {np.mean(psnr200eps0)}')
+            print(f'1/16 res {np.mean(psnr100eps0)}')
+
+            return
+
+
+
+
     N_iters = 1000001 + 1
     kappa = 1
     print('Begin')
@@ -957,17 +1030,17 @@ def train():
         # kappa is a hyperparameter that governs the relative weight of satisfying the interval loss versus fit loss
         # with warmup
 
-        if i < 80000:
+        if i < 60000:
             eps = 0
-        elif i < 130000:
-            eps = ((i - 79999) / 50000) * epsilon
+        elif i < 160000:
+            eps = ((i - 59999) / 100000) * epsilon
         else:
             eps = epsilon
 
-        if i < 80000:
+        if i < 60000:
             kappa = 1
-        elif i < 180000:
-            kappa = max(1 - 0.000005 * (i - 79999), 0.5)
+        elif i < 260000:
+            kappa = max(1 - 0.0000025 * (i - 59999), 0.5)
         else:
             kappa = 0.5
 
@@ -992,9 +1065,13 @@ def train():
 
         optimizer.zero_grad()
         loss_fit = img2mse(rgb, target_s)
+
         # loss_fit = img2mse2(rgb, target_s, mask)
         loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
         # loss_spec = interval_loss2(target_s, rgb_map_left, rgb_map_right, mask)
+
+        logger.add_scalar('test/loss_fit', loss_fit.item(), global_step=i)
+        logger.add_scalar('test/loss_spec', loss_spec.item(), global_step=i)
 
         psnr = mse2psnr(loss_fit)
 
@@ -1004,8 +1081,11 @@ def train():
         if 'rgb0' in extras:
             img_loss0 = img2mse(extras['rgb0'], target_s)
             # img_loss0 = img2mse2(extras['rgb0'], target_s, mask)
-            # loss_spec0 = interval_loss2(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'], mask)
             loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
+            # loss_spec0 = interval_loss2(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'], mask)
+
+            logger.add_scalar('test/loss_fit0', img_loss0.item(), global_step=i)
+            logger.add_scalar('test/loss_spec0', loss_spec.item(), global_step=i)
 
             psnr0 = mse2psnr(img_loss0)
 
@@ -1016,6 +1096,8 @@ def train():
             loss_spec = loss_spec + loss_spec0
 
         loss = kappa * loss_fit + (1 - kappa) * loss_spec
+
+
 
         logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
 
@@ -1029,14 +1111,28 @@ def train():
         # NOTE: IMPORTANT!
         ###   update learning rate   ###
 
+
+
         decay_rate = 0.1
         decay_steps = args.lrate_decay * 1000
-        if i < 10000:
-            new_lrate = 1e-4 * np.exp((np.log(5) - np.log(1)) / 10000 * global_step)
-        else:
-            new_lrate = 5e-4 * (decay_rate ** ((global_step - 5000) / decay_steps))
+        new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
         for param_group in optimizer.param_groups:
             param_group['lr'] = new_lrate
+
+
+
+
+
+
+
+        # decay_rate = 0.1
+        # decay_steps = args.lrate_decay * 1000
+        # if i < 5000:
+        #     new_lrate = 1e-4 * np.exp((np.log(5) - np.log(1)) / 5000 * global_step)
+        # else:
+        #     new_lrate = 5e-4 * (decay_rate ** ((global_step - 5000) / decay_steps))
+        # for param_group in optimizer.param_groups:
+        #     param_group['lr'] = new_lrate
         ################################
 
         dt = time.time() - time0
