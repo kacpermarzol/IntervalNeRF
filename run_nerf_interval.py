@@ -24,22 +24,22 @@ from load_multiscale import load_multiscale_data
 # tqdm.__init__ = partialmethod(tqdm.__init__, disable=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# np.random.seed(1)
+
 DEBUG = False
 
 
-def batchify(fn, chunk, epsilon):
+def batchify(fn, chunk):
     """Constructs a version of 'fn' that applies to smaller batches.
     """
 
     if chunk is None:
         return fn
 
-    def ret(inputs):
+    def ret(inputs, epsilon):
         mu_list = []
         eps_list = []
         for i in range(0, inputs.shape[0], chunk):
-            mu_, eps_ = fn(inputs[i:i + chunk], epsilon)
+            mu_, eps_ = fn(inputs[i:i + chunk], epsilon[i : i +chunk])
             mu_list.append(mu_)
             eps_list.append(eps_)
         mu = torch.cat(mu_list, 0)
@@ -61,7 +61,8 @@ def run_network(inputs, viewdirs, fn, eps, embed_fn, embeddirs_fn, netchunk=1024
         embedded_dirs = embeddirs_fn(input_dirs_flat)
         embedded = torch.cat([embedded, embedded_dirs], -1)
 
-    outputs_flat = batchify(fn, netchunk, eps)(embedded)
+
+    outputs_flat = batchify(fn, netchunk)(embedded, eps)
     mu_flat = outputs_flat[0]
     eps_flat = outputs_flat[1]
     mu = torch.reshape(mu_flat, list(inputs.shape[:-1]) + [mu_flat.shape[-1]])
@@ -75,7 +76,7 @@ def batchify_rays(rays_flat, eps, chunk=1024 * 32, **kwargs):
     """
     all_ret = {}
     for i in range(0, rays_flat.shape[0], chunk):
-        ret = render_rays(rays_flat[i:i + chunk], eps=eps, **kwargs)
+        ret = render_rays(rays_flat[i:i + chunk], epsilon=eps, **kwargs)
         for k in ret:
             if k not in all_ret:
                 all_ret[k] = []
@@ -85,7 +86,7 @@ def batchify_rays(rays_flat, eps, chunk=1024 * 32, **kwargs):
     return all_ret
 
 
-def render(H, W, K, eps, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
+def render(H, W, K, eps, chunk=1024 * 32, rays=None, H_train=None, c2w=None, ndc=True,
            near=0., far=1.,
            use_viewdirs=False, c2w_staticcam=None,
            **kwargs):
@@ -118,28 +119,41 @@ def render(H, W, K, eps, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
         # use provided ray batch
         rays_o, rays_d = rays
 
+    rays_o = torch.reshape(rays_o, [-1, 3]).float()
+    rays_d = torch.reshape(rays_d, [-1, 3]).float()
+
     if use_viewdirs:
         # provide ray directions as input
         viewdirs = rays_d
+        distances = torch.norm(viewdirs, p=2, dim=-1, keepdim=True)
+
         if c2w_staticcam is not None:
             # special case to visualize effect of viewdirs
             rays_o, rays_d = get_rays(H, W, K, c2w_staticcam)
         viewdirs = viewdirs / torch.norm(viewdirs, dim=-1, keepdim=True)
         viewdirs = torch.reshape(viewdirs, [-1, 3]).float()
 
+    if H_train is not None:
+        pixel = 1 / H_train
+        if np.shape(H_train) == ():
+            pixel = torch.ones_like(distances) * pixel
+
+
+
     sh = rays_d.shape  # [..., 3]
     if ndc:
         # for forward facing scenes
         rays_o, rays_d = ndc_rays(H, W, K[0][0], 1., rays_o, rays_d)
 
-    # Create ray batch
-    rays_o = torch.reshape(rays_o, [-1, 3]).float()
-    rays_d = torch.reshape(rays_d, [-1, 3]).float()
+
 
     near, far = near * torch.ones_like(rays_d[..., :1]), far * torch.ones_like(rays_d[..., :1])
     rays = torch.cat([rays_o, rays_d, near, far], -1)
     if use_viewdirs:
-        rays = torch.cat([rays, viewdirs], -1)
+        # if c2w is not None:
+        #     rays = torch.cat([rays, viewdirs], -1)
+        # else:
+        rays = torch.cat([rays, viewdirs, torch.tensor(distances), torch.tensor(pixel)], -1)
 
     # Render and reshape
     all_ret = batchify_rays(rays, eps, chunk, **kwargs)
@@ -169,8 +183,10 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, eps, gt_imgs=None, s
     for i, c2w in enumerate(tqdm(render_poses)):
         print(i, time.time() - t)
         t = time.time()
-        rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(H, W, K, eps=eps, chunk=chunk, c2w=c2w[:3, :4],
+        rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(H, W, K, eps=eps, chunk=chunk, H_train=H, c2w=c2w[:3, :4],
                                                                      **render_kwargs)
+
+        rgb = rgb.view(H, W, 3)
         rgbs.append(rgb.cpu().numpy())
         disps.append(disp.cpu().numpy())
         if i == 0:
@@ -425,7 +441,7 @@ def raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std=0, white_
 
 
 def render_rays(ray_batch,
-                eps,
+                epsilon,
                 network_fn,
                 network_query_fn,
                 N_samples,
@@ -470,7 +486,10 @@ def render_rays(ray_batch,
     """
     N_rays = ray_batch.shape[0]
     rays_o, rays_d = ray_batch[:, 0:3], ray_batch[:, 3:6]  # [N_rays, 3] each
-    viewdirs = ray_batch[:, -3:] if ray_batch.shape[-1] > 8 else None
+    viewdirs = ray_batch[:, 8 : 11] if ray_batch.shape[-1] > 8 else None
+    distances = ray_batch[:, -2] if ray_batch.shape[-1] > 10 else None
+    pixel = ray_batch[:, -1] if ray_batch.shape[-1]>10 else None
+
     bounds = torch.reshape(ray_batch[..., 6:8], [-1, 1, 2])
     near, far = bounds[..., 0], bounds[..., 1]  # [-1,1]
 
@@ -500,6 +519,17 @@ def render_rays(ray_batch,
 
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
+    if distances is not None:
+        distances1 = distances.unsqueeze(1).repeat(1, N_samples)
+        rays_origins = rays_o.unsqueeze(1).repeat(1, N_samples, 1)
+        distances2 = torch.norm(pts - rays_origins, p=2, dim=-1)
+        pixel_ = pixel.unsqueeze(1).repeat(1, N_samples)
+
+        pre_eps = ((pixel_*distances2)/distances1).reshape(-1,1)
+        eps = (pre_eps * epsilon).to(torch.float32)
+    else:
+        eps = epsilon * torch.ones(N_rays * N_samples, 1)
+
     raw_mu, raw_eps = network_query_fn(pts, viewdirs, network_fn, eps)
 
     raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
@@ -512,6 +542,7 @@ def render_rays(ray_batch,
     rgb_map_left, rgb_map_right = raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                   pytest=pytest)
 
+
     if N_importance > 0:
         rgb_map_0, disp_map_0, acc_map_0, rgb_map_left_0, rgb_map_right_0 = rgb_map, disp_map, acc_map, rgb_map_left, rgb_map_right
 
@@ -520,8 +551,21 @@ def render_rays(ray_batch,
         z_samples = z_samples.detach()
 
         z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
+
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :,
                                                             None]  # [N_rays, N_samples + N_importance, 3]
+
+        if distances is not None:
+            distances1 = distances.unsqueeze(1).repeat(1, N_importance + N_samples)
+            rays_origins = rays_o.unsqueeze(1).repeat(1, N_importance + N_samples, 1)
+            distances2 = torch.norm(pts - rays_origins, p=2, dim=-1)
+
+            pixel_ = pixel.unsqueeze(1).repeat(1, N_importance + N_samples)
+
+            pre_eps = ((pixel_ * distances2) / distances1).reshape(-1, 1)
+            eps = (pre_eps * epsilon).to(torch.float32)
+        else:
+            eps = epsilon * torch.ones(N_rays * (N_samples + N_importance), 1)
 
         run_fn = network_fn if network_fine is None else network_fine
         raw_mu, raw_eps = network_query_fn(pts, viewdirs, run_fn, eps)
@@ -653,13 +697,13 @@ def config_parser():
     # logging/saving options
     parser.add_argument("--i_print", type=int, default=10000,
                         help='frequency of console printout and metric loggin')
-    parser.add_argument("--i_img", type=int, default=2000,
+    parser.add_argument("--i_img", type=int, default=5000,
                         help='frequency of tensorboard image logging')
-    parser.add_argument("--i_weights", type=int, default=25000,
+    parser.add_argument("--i_weights", type=int, default=10000,
                         help='frequency of weight ckpt saving')
     parser.add_argument("--i_testset", type=int, default=50000,
                         help='frequency of testset saving')
-    parser.add_argument("--i_video", type=int, default=250000,  ###!!!
+    parser.add_argument("--i_video", type=int, default=500000,  ###!!!
                         help='frequency of render_poses video saving')
 
     ### Added eps argument for IntervalNeRF
@@ -677,7 +721,6 @@ def train():
     parser = config_parser()
     args = parser.parse_args()
     logger = tb.SummaryWriter(log_dir=f"runs/{args.expname}")
-    print(args.eps)
     # Load data
     K = None
 
@@ -865,6 +908,14 @@ def train():
         lossmult2 = np.concatenate(
             [np.array(np.full((H[i] * W[i], 1), lossmult[i])) for i in i_train]).flatten().reshape(-1, 1)
 
+        H_train = np.concatenate(
+            [np.array(np.full((H[i] * W[i], 1), H[i])) for i in i_train]).flatten().reshape(-1, 1)
+
+        H_test = np.concatenate(
+            [np.array(np.full((H[i] * W[i], 1), H[i])) for i in i_test]).flatten().reshape(-1, 1)
+
+
+
         print('done, concats')
 
         rays_rgb = []
@@ -898,23 +949,29 @@ def train():
         rays_rgb_test = np.array(rays_rgb_test, dtype=np.float32)
         print('shuffle rays')
 
+
         rand_idx = np.random.permutation(rays_rgb.shape[0])
 
         rays_rgb = rays_rgb[rand_idx]
         lossmult2 = lossmult2[rand_idx]
+        H_train = H_train[rand_idx]
 
         rand_idx_test = np.random.permutation(
             5000000)  # assuming 1 milion iterations with batch size = 4096, this is enough
         rays_rgb_test = rays_rgb_test[rand_idx_test]
+        H_test = H_test[rand_idx_test]
 
         i_batch = 0
         i_batch_test = 0
 
         # Move training data to GPU
     # if use_batching:
-    #     images = torch.Tensor(images).to(device)
     poses = torch.Tensor(poses).to(device)
+    # images = torch.Tensor(images).to(device)
+
     if use_batching:
+        H_test = torch.Tensor(H_test).to(device)
+        H_train = torch.Tensor(H_train).to(device)
         rays_rgb_test = torch.Tensor(rays_rgb_test).to(device)
         rays_rgb = torch.Tensor(rays_rgb).to(device)
         lossmult2 = torch.Tensor(lossmult2).to(device)
@@ -934,33 +991,37 @@ def train():
         print('METRICS ONLY')
         with torch.no_grad():
             for i in i_test:
-                img_i = i_test[i]
-                hh, ww, ff = H[img_i], W[img_i], focal[img_i]
+                hh, ww, ff = H[i], W[i], focal[i]
                 kk = np.array([[ff, 0, 0.5 * ww],
                                [0, ff, 0.5 * hh],
                                [0, 0, 1]])
-                pose = poses[img_i, :3, :4]
+                pose = poses[i, :3, :4]
 
-                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=args.epsilon, chunk=args.chunk, c2w=pose,
+                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=args.eps, H_train=hh, chunk=args.chunk, c2w=pose,
                                                 **render_kwargs_test)
+                rgb = rgb.view(hh, ww, 3).cpu()
 
-                psnr = mse2psnr(img2mse(rgb, images[img_i]))
-                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose,
+                psnr = mse2psnr(img2mse(rgb, images[i]))
+
+
+
+                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, H_train=hh, chunk=args.chunk, c2w=pose,
                                                 **render_kwargs_test)
+                rgb = rgb.view(hh, ww, 3).cpu()
 
-                psnr0 = mse2psnr(img2mse(rgb, images[img_i]))
+                psnr0 = mse2psnr(img2mse(rgb, images[i]))
 
 
-                if lossmult[img_i]==1:
+                if lossmult[i]==1:
                     psnr800.append(psnr)
                     psnr800eps0.append(psnr0)
-                elif lossmult[img_i]==4:
+                elif lossmult[i]==4:
                     psnr400.append(psnr)
                     psnr400eps0.append(psnr)
-                elif lossmult[img_i]==16:
+                elif lossmult[i]==16:
                     psnr200.append(psnr)
                     psnr200eps0.append(psnr)
-                elif lossmult[img_i]==64:
+                elif lossmult[i]==64:
                     psnr100.append(psnr)
                     psnr100eps0.append(psnr)
                 else:
@@ -971,7 +1032,7 @@ def train():
             print("PSNR")
             print("_-_-_-_-_-_-_-_")
 
-            print(f'EPS {args.epsilon}')
+            print(f'EPS {args.eps}')
             print(f'Full res {np.mean(psnr800)}')
             print(f'1/2 res {np.mean(psnr400)}')
             print(f'1/4 res {np.mean(psnr200)}')
@@ -1007,6 +1068,7 @@ def train():
             # Random over all images
             batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
             mask = lossmult2[i_batch:i_batch + N_rand]
+            HH = H_train[i_batch: i_batch + N_rand]
             # for making the loss like in MipNeRF:
             # "loss of each pixel by the area
             # of that pixel’s footprint in the original image (the loss for pixels from the 1/4 images is scaled by 16, etc)
@@ -1020,6 +1082,7 @@ def train():
                 rand_idx = np.random.permutation(rays_rgb.shape[0])
                 rays_rgb = rays_rgb[rand_idx]
                 lossmult2 = lossmult2[rand_idx]
+                H_train = H_train[rand_idx]
                 i_batch = 0
 
         else:
@@ -1030,33 +1093,38 @@ def train():
         # kappa is a hyperparameter that governs the relative weight of satisfying the interval loss versus fit loss
         # with warmup
 
-        if i < 60000:
+        if i < 25000:
             eps = 0
-        elif i < 160000:
-            eps = ((i - 59999) / 100000) * epsilon
+        elif i < 50000:
+            eps = ((i - 24999) / 25000) * epsilon
         else:
             eps = epsilon
 
-        if i < 60000:
+        if i < 25000:
             kappa = 1
-        elif i < 260000:
-            kappa = max(1 - 0.0000025 * (i - 59999), 0.5)
+        elif i < 75000:
+            kappa = max(1 - 0.00001 * (i - 24999), 0.5)
         else:
             kappa = 0.5
 
         # without warmup
-        # if i < 20000:
-        #     eps = (i / 20000) * epsilon
-        #     if eps != 0:
-        #         kappa = max(1 - 0.000025 * i, 0.5)
+
+        # if i < 50000:
+        #     eps = (i / 50000) * epsilon
         # else:
         #     eps = epsilon
+        #
+        # if i < 100000:
+        #     kappa = max(1 - 0.000005 * i, 0.5)
+        # else:
         #     kappa = 0.5
 
+
         rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays,
-                                                                     verbose=i < 10, retraw=True,
+                                                                     verbose=i < 10, retraw=True, H_train = HH,
                                                                      **render_kwargs_train)
-        # trans = extras['raw'][..., -1]
+
+
         if i % 1000 == 0:
             print("target : ", target_s[0:3])
             print("rgb : ", rgb[0:3])
@@ -1065,18 +1133,16 @@ def train():
 
         optimizer.zero_grad()
         loss_fit = img2mse(rgb, target_s)
-
         # loss_fit = img2mse2(rgb, target_s, mask)
         loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
         # loss_spec = interval_loss2(target_s, rgb_map_left, rgb_map_right, mask)
 
-        logger.add_scalar('test/loss_fit', loss_fit.item(), global_step=i)
-        logger.add_scalar('test/loss_spec', loss_spec.item(), global_step=i)
+        logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
+        logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
 
         psnr = mse2psnr(loss_fit)
 
         logger.add_scalar('train/fine_psnr', psnr, global_step=i)
-        logger.add_scalar('train/fine_loss_spec', loss_spec, global_step=i)
 
         if 'rgb0' in extras:
             img_loss0 = img2mse(extras['rgb0'], target_s)
@@ -1084,16 +1150,16 @@ def train():
             loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
             # loss_spec0 = interval_loss2(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'], mask)
 
-            logger.add_scalar('test/loss_fit0', img_loss0.item(), global_step=i)
-            logger.add_scalar('test/loss_spec0', loss_spec.item(), global_step=i)
+            logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
+            logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
 
             psnr0 = mse2psnr(img_loss0)
 
             logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
-            logger.add_scalar('train/coarse_loss_spec', loss_spec0, global_step=i)
 
             loss_fit = loss_fit + img_loss0
             loss_spec = loss_spec + loss_spec0
+
 
         loss = kappa * loss_fit + (1 - kappa) * loss_spec
 
@@ -1112,17 +1178,11 @@ def train():
         ###   update learning rate   ###
 
 
-
         decay_rate = 0.1
         decay_steps = args.lrate_decay * 1000
         new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
         for param_group in optimizer.param_groups:
             param_group['lr'] = new_lrate
-
-
-
-
-
 
 
         # decay_rate = 0.1
@@ -1141,15 +1201,17 @@ def train():
 
         if i % args.save_every == 0:
             batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand]  # [B, 2+1, 3*?]
+            HH = H_test[i_batch_test : i_batch_test + N_rand]
             i_batch_test += N_rand
             batch_test = torch.transpose(batch_test, 0, 1)
             batch_rays_test, target_s_test = batch_test[:2], batch_test[2]
             with torch.no_grad():
                 rgb, _, _, _, _, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_test,
-                                                 verbose=i < 10, retraw=True, **render_kwargs_test)
+                                                 verbose=i < 10, retraw=True, H_train = HH, **render_kwargs_test)
                 loss_fit = img2mse(rgb, target_s_test)
                 psnr = mse2psnr(loss_fit)
                 logger.add_scalar('eval/fine_psnr', psnr, global_step=i)
+
 
                 if 'rgb0' in extras:
                     img_loss0 = img2mse(extras['rgb0'], target_s_test)
@@ -1160,7 +1222,9 @@ def train():
                     logger.add_scalar('eval/avg_psnr', avg_psnr, global_step=i)
 
                 rgb, _, _, _, _, extras = render(1, 1, 1, 0, chunk=args.chunk, rays=batch_rays_test,
-                                                 verbose=i < 10, retraw=True, **render_kwargs_test)
+                                                 verbose=i < 10, retraw=True, H_train = HH, **render_kwargs_test)
+
+
                 loss_fit = img2mse(rgb, target_s_test)
                 psnr = mse2psnr(loss_fit)
                 logger.add_scalar('eval/fine_psnr_eps0', psnr, global_step=i)
@@ -1224,14 +1288,21 @@ def train():
             kk = np.array([[ff, 0, 0.5 * ww],
                            [0, ff, 0.5 * hh],
                            [0, 0, 1]])
+
+            HH = torch.ones(hh**2, 1) * hh
             pose = poses[img_i, :3, :4]
             with torch.no_grad():
-                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=eps, chunk=args.chunk, c2w=pose,
+                rgb, _, _, _, _, _ = \
+                    render(hh, ww, kk, eps=eps, chunk=args.chunk, c2w=pose, H_train = HH,
                                             **render_kwargs_test)
+
+                rgb = rgb.view(hh, ww, 3)
                 logger.add_image('image', rgb, dataformats='HWC', global_step=i)
 
-                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose,
+                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose, H_train = HH,
                                             **render_kwargs_test)
+                rgb = rgb.view(hh, ww, 3)
+
                 logger.add_image('image_eps0', rgb, dataformats='HWC', global_step=i)
 
         if i % args.i_print == 0:
