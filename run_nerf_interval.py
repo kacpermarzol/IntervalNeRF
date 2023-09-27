@@ -532,6 +532,7 @@ def render_rays(ray_batch,
 
     raw_mu, raw_eps = network_query_fn(pts, viewdirs, network_fn, eps)
 
+    # raw_eps[:, :, -1] = 0
     raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
 
     # get outputs from the basic nerf
@@ -711,8 +712,9 @@ def config_parser():
                         help=' todo ')
 
     parser.add_argument("--save_every", type=int, default=200, help="The number of steps to run eval on testset")
+    parser.add_argument("--metrics_only", type=bool, default=False)
 
-    parser.add_argument("--metrics_only", type=bool, default=False, help="to only calculate metrics")
+
 
     return parser
 
@@ -990,7 +992,8 @@ def train():
 
         print('METRICS ONLY')
         with torch.no_grad():
-            for i in i_test:
+            for i in i_test[0:200]:
+                print(i)
                 hh, ww, ff = H[i], W[i], focal[i]
                 kk = np.array([[ff, 0, 0.5 * ww],
                                [0, ff, 0.5 * hh],
@@ -1017,13 +1020,13 @@ def train():
                     psnr800eps0.append(psnr0)
                 elif lossmult[i]==4:
                     psnr400.append(psnr)
-                    psnr400eps0.append(psnr)
+                    psnr400eps0.append(psnr0)
                 elif lossmult[i]==16:
                     psnr200.append(psnr)
-                    psnr200eps0.append(psnr)
+                    psnr200eps0.append(psnr0)
                 elif lossmult[i]==64:
                     psnr100.append(psnr)
-                    psnr100eps0.append(psnr)
+                    psnr100eps0.append(psnr0)
                 else:
                     print("something went wrong")
 
@@ -1033,17 +1036,17 @@ def train():
             print("_-_-_-_-_-_-_-_")
 
             print(f'EPS {args.eps}')
-            print(f'Full res {np.mean(psnr800)}')
-            print(f'1/2 res {np.mean(psnr400)}')
-            print(f'1/4 res {np.mean(psnr200)}')
-            print(f'1/16 res {np.mean(psnr100)}')
+            print(f'Full res {torch.mean(torch.tensor(psnr800))}')
+            print(f'1/2 res {torch.mean(torch.tensor(psnr400))}')
+            print(f'1/4 res {torch.mean(torch.tensor(psnr200))}')
+            print(f'1/8 res {torch.mean(torch.tensor(psnr100))}')
 
             print('\n _-_-_-_-_-_-_-_ \n')
             print("EPS 0")
-            print(f'Full res {np.mean(psnr800eps0)}')
-            print(f'1/2 res {np.mean(psnr400eps0)}')
-            print(f'1/4 res {np.mean(psnr200eps0)}')
-            print(f'1/16 res {np.mean(psnr100eps0)}')
+            print(f'Full res {torch.mean(torch.tensor(psnr800eps0))}')
+            print(f'1/2 res {torch.mean(torch.tensor(psnr400eps0))}')
+            print(f'1/4 res {torch.mean(torch.tensor(psnr200eps0))}')
+            print(f'1/8 res {torch.mean(torch.tensor(psnr100eps0))}')
 
             return
 
@@ -1092,7 +1095,7 @@ def train():
 
         # kappa is a hyperparameter that governs the relative weight of satisfying the interval loss versus fit loss
         # with warmup
-
+        #
         if i < 25000:
             eps = 0
         elif i < 50000:
@@ -1108,7 +1111,7 @@ def train():
             kappa = 0.5
 
         # without warmup
-
+        #
         # if i < 50000:
         #     eps = (i / 50000) * epsilon
         # else:
