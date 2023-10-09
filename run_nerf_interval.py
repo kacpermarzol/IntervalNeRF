@@ -1096,17 +1096,31 @@ def train():
         # kappa is a hyperparameter that governs the relative weight of satisfying the interval loss versus fit loss
         # with warmup
         #
-        if i < 25000:
+        # if i < 200000:
+        #     eps = 0
+        # elif i < 250000:
+        #     eps = ((i - 199999) / 50000) * epsilon
+        # else:
+        #     eps = epsilon
+        #
+        # if i < 200000:
+        #     kappa = 1
+        # elif i < 300000:
+        #     kappa = max(1 - 0.000005 * (i - 199999), 0.5)
+        # else:
+        #     kappa = 0.5
+
+        if i < 100000:
             eps = 0
-        elif i < 50000:
-            eps = ((i - 24999) / 25000) * epsilon
+        elif i < 150000:
+            eps = ((i - 99999) / 50000) * epsilon
         else:
             eps = epsilon
 
-        if i < 25000:
+        if i < 100000:
             kappa = 1
-        elif i < 75000:
-            kappa = max(1 - 0.00001 * (i - 24999), 0.5)
+        elif i < 200000:
+            kappa = max(1 - 0.000005 * (i - 99999), 0.5)
         else:
             kappa = 0.5
 
@@ -1135,10 +1149,10 @@ def train():
             print("rgb_right : ", rgb_map_right[0:3], '\n')
 
         optimizer.zero_grad()
-        loss_fit = img2mse(rgb, target_s)
-        # loss_fit = img2mse2(rgb, target_s, mask)
-        loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
-        # loss_spec = interval_loss2(target_s, rgb_map_left, rgb_map_right, mask)
+        # loss_fit = img2mse(rgb, target_s)
+        loss_fit = img2mse2(rgb, target_s, mask)
+        # loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
+        loss_spec = interval_loss2(target_s, rgb_map_left, rgb_map_right, mask)
 
         logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
         logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
@@ -1148,10 +1162,10 @@ def train():
         logger.add_scalar('train/fine_psnr', psnr, global_step=i)
 
         if 'rgb0' in extras:
-            img_loss0 = img2mse(extras['rgb0'], target_s)
-            # img_loss0 = img2mse2(extras['rgb0'], target_s, mask)
-            loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
-            # loss_spec0 = interval_loss2(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'], mask)
+            # img_loss0 = img2mse(extras['rgb0'], target_s)
+            img_loss0 = img2mse2(extras['rgb0'], target_s, mask)
+            # loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
+            loss_spec0 = interval_loss2(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'], mask)
 
             logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
             logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
