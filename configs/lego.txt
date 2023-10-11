@@ -1,4 +1,4 @@
-expname = multicamV4.4
+expname = multicamV1
 basedir = ./logs
 datadir = ./data/multiscale/lego
 dataset_type = multiscale
@@ -11,10 +11,6 @@ lrate_decay = 500
 
 N_samples = 64
 N_importance = 128
-N_rand= 512
+N_rand= 4096
 
-precrop_iters = 500
-precrop_frac = 0.5
-
-half_res = False
-eps=0.0001
+eps = 0.01

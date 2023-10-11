@@ -696,22 +696,22 @@ def config_parser():
                         help='will take every 1/N images as LLFF test set, paper uses 8')
 
     # logging/saving options
-    parser.add_argument("--i_print", type=int, default=10000,
+    parser.add_argument("--i_print", type=int, default=1000000,
                         help='frequency of console printout and metric loggin')
-    parser.add_argument("--i_img", type=int, default=5000,
+    parser.add_argument("--i_img", type=int, default=10000,
                         help='frequency of tensorboard image logging')
-    parser.add_argument("--i_weights", type=int, default=10000,
+    parser.add_argument("--i_weights", type=int, default=25000,
                         help='frequency of weight ckpt saving')
     parser.add_argument("--i_testset", type=int, default=50000,
                         help='frequency of testset saving')
-    parser.add_argument("--i_video", type=int, default=500000,  ###!!!
+    parser.add_argument("--i_video", type=int, default=1000000,  ###!!!
                         help='frequency of render_poses video saving')
 
     ### Added eps argument for IntervalNeRF
     parser.add_argument("--eps", type=float, default=0.0,
                         help=' todo ')
 
-    parser.add_argument("--save_every", type=int, default=200, help="The number of steps to run eval on testset")
+    parser.add_argument("--save_every", type=int, default=1000, help="The number of steps to run eval on testset")
     parser.add_argument("--metrics_only", type=bool, default=False)
 
 
@@ -1096,33 +1096,33 @@ def train():
         # kappa is a hyperparameter that governs the relative weight of satisfying the interval loss versus fit loss
         # with warmup
         #
-        # if i < 200000:
-        #     eps = 0
-        # elif i < 250000:
-        #     eps = ((i - 199999) / 50000) * epsilon
-        # else:
-        #     eps = epsilon
-        #
-        # if i < 200000:
-        #     kappa = 1
-        # elif i < 300000:
-        #     kappa = max(1 - 0.000005 * (i - 199999), 0.5)
-        # else:
-        #     kappa = 0.5
-
-        if i < 100000:
+        if i < 200000:
             eps = 0
-        elif i < 150000:
-            eps = ((i - 99999) / 50000) * epsilon
+        elif i < 250000:
+            eps = ((i - 199999) / 50000) * epsilon
         else:
             eps = epsilon
 
-        if i < 100000:
+        if i < 200000:
             kappa = 1
-        elif i < 200000:
-            kappa = max(1 - 0.000005 * (i - 99999), 0.5)
+        elif i < 300000:
+            kappa = max(1 - 0.000005 * (i - 199999), 0.5)
         else:
             kappa = 0.5
+
+        # if i < 100000:
+        #     eps = 0
+        # elif i < 150000:
+        #     eps = ((i - 99999) / 50000) * epsilon
+        # else:
+        #     eps = epsilon
+        #
+        # if i < 100000:
+        #     kappa = 1
+        # elif i < 200000:
+        #     kappa = max(1 - 0.000005 * (i - 99999), 0.5)
+        # else:
+        #     kappa = 0.5
 
         # without warmup
         #
