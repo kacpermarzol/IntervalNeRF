@@ -153,7 +153,7 @@ def render(H, W, K, eps, chunk=1024 * 32, rays=None, H_train=None, c2w=None, ndc
         # if c2w is not None:
         #     rays = torch.cat([rays, viewdirs], -1)
         # else:
-        rays = torch.cat([rays, viewdirs, torch.tensor(distances), torch.tensor(pixel)], -1)
+        rays = torch.cat([rays, viewdirs, distances, pixel], -1)
 
     # Render and reshape
     all_ret = batchify_rays(rays, eps, chunk, **kwargs)
@@ -968,7 +968,7 @@ def train():
 
         # Move training data to GPU
     # if use_batching:
-    poses = torch.Tensor(poses)
+    poses = torch.from_numpy(poses)
     # images = torch.Tensor(images).to(device)
 
     if use_batching:
@@ -1066,7 +1066,7 @@ def train():
         # Sample random ray batch
         if use_batching:
             # Random over all images
-            batch = rays_rgb[i_batch:i_batch + N_rand].to(device) # [B, 2+1, 3*?]
+            batch = rays_rgb[i_batch:i_batch + N_rand] # [B, 2+1, 3*?]
             mask = lossmult2[i_batch:i_batch + N_rand].to(device)
             HH = H_train[i_batch: i_batch + N_rand].to(device)
             # for making the loss like in MipNeRF:
@@ -1074,7 +1074,7 @@ def train():
             # of that pixel’s footprint in the original image (the loss for pixels f12rom the 1/4 images is scaled by 16, etc)
             # so that the few low-resolution pixels have comparable influence to the many high-resolution pixels. "
             batch = torch.transpose(batch, 0, 1)
-            batch_rays, target_s = batch[:2], batch[2]
+            batch_rays, target_s = batch[:2].to(device), batch[2].to(device)
 
             i_batch += N_rand
             if i_batch >= rays_rgb.shape[0]:
