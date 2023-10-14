@@ -835,8 +835,8 @@ def train():
         [0, focal_test, 0.5 * H_test],
         [0, 0, 1]])
 
-    if args.render_test:
-        render_poses = np.array(poses[i_test])
+    # if args.render_test:
+    #     render_poses = np.array(poses[i_test])
 
     # Create log dir and copy the config file
     basedir = args.basedir
@@ -864,7 +864,7 @@ def train():
     render_kwargs_test.update(bds_dict)
 
     # Move testing data to GPU
-    render_poses = torch.Tensor(render_poses).to(device)
+    # render_poses = torch.Tensor(render_poses).to(device)
 
 
     # Short circuit if only rendering out from trained model
@@ -945,10 +945,10 @@ def train():
             rays_rgb_test[i] = ray.reshape(-1, 3, 3)
 
         rays_rgb = np.concatenate(rays_rgb, 0)
-        rays_rgb = np.array(rays_rgb, dtype=np.float32)
+        # rays_rgb = np.array(rays_rgb, dtype=np.float32)
 
         rays_rgb_test = np.concatenate(rays_rgb_test, 0)
-        rays_rgb_test = np.array(rays_rgb_test, dtype=np.float32)
+        # rays_rgb_test = np.array(rays_rgb_test, dtype=np.float32)
         print('shuffle rays')
 
 
@@ -968,15 +968,15 @@ def train():
 
         # Move training data to GPU
     # if use_batching:
-    poses = torch.Tensor(poses).to(device)
+    poses = torch.Tensor(poses)
     # images = torch.Tensor(images).to(device)
 
     if use_batching:
-        H_test = torch.Tensor(H_test).to(device)
-        H_train = torch.Tensor(H_train).to(device)
-        rays_rgb_test = torch.Tensor(rays_rgb_test).to(device)
-        rays_rgb = torch.Tensor(rays_rgb).to(device)
-        lossmult2 = torch.Tensor(lossmult2).to(device)
+        H_test = torch.from_numpy(H_test)
+        H_train = torch.from_numpy(H_train)
+        rays_rgb_test = torch.from_numpy(rays_rgb_test)
+        rays_rgb = torch.from_numpy(rays_rgb)
+        lossmult2 = torch.from_numpy(lossmult2)
 
 
     # Short circuit if only calculating metrics
@@ -1008,25 +1008,25 @@ def train():
 
 
 
-                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, H_train=hh, chunk=args.chunk, c2w=pose,
-                                                **render_kwargs_test)
-                rgb = rgb.view(hh, ww, 3).cpu()
-
-                psnr0 = mse2psnr(img2mse(rgb, images[i]))
+                # rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, H_train=hh, chunk=args.chunk, c2w=pose,
+                #                                 **render_kwargs_test)
+                # rgb = rgb.view(hh, ww, 3).cpu()
+                #
+                # psnr0 = mse2psnr(img2mse(rgb, images[i]))
 
 
                 if lossmult[i]==1:
                     psnr800.append(psnr)
-                    psnr800eps0.append(psnr0)
+                    # psnr800eps0.append(psnr0)
                 elif lossmult[i]==4:
                     psnr400.append(psnr)
-                    psnr400eps0.append(psnr0)
+                    # psnr400eps0.append(psnr0)
                 elif lossmult[i]==16:
                     psnr200.append(psnr)
-                    psnr200eps0.append(psnr0)
+                    # psnr200eps0.append(psnr0)
                 elif lossmult[i]==64:
                     psnr100.append(psnr)
-                    psnr100eps0.append(psnr0)
+                    # psnr100eps0.append(psnr0)
                 else:
                     print("something went wrong")
 
@@ -1041,20 +1041,17 @@ def train():
             print(f'1/4 res {torch.mean(torch.tensor(psnr200))}')
             print(f'1/8 res {torch.mean(torch.tensor(psnr100))}')
 
-            print('\n _-_-_-_-_-_-_-_ \n')
-            print("EPS 0")
-            print(f'Full res {torch.mean(torch.tensor(psnr800eps0))}')
-            print(f'1/2 res {torch.mean(torch.tensor(psnr400eps0))}')
-            print(f'1/4 res {torch.mean(torch.tensor(psnr200eps0))}')
-            print(f'1/8 res {torch.mean(torch.tensor(psnr100eps0))}')
+            # print('\n _-_-_-_-_-_-_-_ \n')
+            # print("EPS 0")
+            # print(f'Full res {torch.mean(torch.tensor(psnr800eps0))}')
+            # print(f'1/2 res {torch.mean(torch.tensor(psnr400eps0))}')
+            # print(f'1/4 res {torch.mean(torch.tensor(psnr200eps0))}')
+            # print(f'1/8 res {torch.mean(torch.tensor(psnr100eps0))}')
 
             return
 
 
-
-
     N_iters = 1000001 + 1
-    kappa = 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
@@ -1069,9 +1066,9 @@ def train():
         # Sample random ray batch
         if use_batching:
             # Random over all images
-            batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
-            mask = lossmult2[i_batch:i_batch + N_rand]
-            HH = H_train[i_batch: i_batch + N_rand]
+            batch = rays_rgb[i_batch:i_batch + N_rand].to(device) # [B, 2+1, 3*?]
+            mask = lossmult2[i_batch:i_batch + N_rand].to(device)
+            HH = H_train[i_batch: i_batch + N_rand].to(device)
             # for making the loss like in MipNeRF:
             # "loss of each pixel by the area
             # of that pixel’s footprint in the original image (the loss for pixels from the 1/4 images is scaled by 16, etc)

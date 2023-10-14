@@ -117,14 +117,10 @@ class NeRF(nn.Module):
         E = epsilon.unsqueeze(1).repeat(1, 1, np.shape(input_pts)[-1]).reshape(-1, np.shape(input_pts)[-1])
         # E  = epsilon
 
-        input_views = input_views.to(torch.float32)
-        input_pts = input_pts.to(torch.float32)
         mu = input_pts
         mu, eps = mu.T, E.T
 
         for i, layer in enumerate(self.pts_linears):
-
-
             mu = layer.weight @ mu + layer.bias[:, None]
             # mu = self.pts_linears[i]._parameters["weight"] @ mu
                  # + self.pts_linears[i]._parameters["bias"][:, None]
