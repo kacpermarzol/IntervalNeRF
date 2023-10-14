@@ -1071,7 +1071,7 @@ def train():
             HH = H_train[i_batch: i_batch + N_rand].to(device)
             # for making the loss like in MipNeRF:
             # "loss of each pixel by the area
-            # of that pixel’s footprint in the original image (the loss for pixels from the 1/4 images is scaled by 16, etc)
+            # of that pixel’s footprint in the original image (the loss for pixels f12rom the 1/4 images is scaled by 16, etc)
             # so that the few low-resolution pixels have comparable influence to the many high-resolution pixels. "
             batch = torch.transpose(batch, 0, 1)
             batch_rays, target_s = batch[:2], batch[2]
@@ -1214,8 +1214,8 @@ def train():
         #####           end            #####
 
         if i % args.save_every == 0:
-            batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand]  # [B, 2+1, 3*?]
-            HH = H_test[i_batch_test : i_batch_test + N_rand]
+            batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand].to(device)  # [B, 2+1, 3*?]
+            HH = H_test[i_batch_test : i_batch_test + N_rand].to(device)
             i_batch_test += N_rand
             batch_test = torch.transpose(batch_test, 0, 1)
             batch_rays_test, target_s_test = batch_test[:2], batch_test[2]
