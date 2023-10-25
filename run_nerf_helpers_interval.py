@@ -117,6 +117,8 @@ class NeRF(nn.Module):
         E = epsilon.unsqueeze(1).repeat(1, 1, np.shape(input_pts)[-1]).reshape(-1, np.shape(input_pts)[-1])
         # E  = epsilon
 
+        # print
+        #ok
         mu = input_pts
         mu, eps = mu.T, E.T
 
