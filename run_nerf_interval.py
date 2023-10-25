@@ -558,6 +558,8 @@ def render_rays(ray_batch,
         z_samples = sample_pdf(z_vals_mid, weights[..., 1:-1], N_importance, det=(perturb == 0.), pytest=pytest)
         z_samples = z_samples.detach()
 
+        del weights
+
         z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
 
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :,
@@ -584,13 +586,24 @@ def render_rays(ray_batch,
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                                      pytest=pytest)
 
+        del weights
+
         rgb_map_left, rgb_map_right = raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                       pytest=pytest)
 
-    ret = {'rgb_map': rgb_map.to('cpu'), 'disp_map': disp_map.to('cpu'), 'acc_map': acc_map.to('cpu'), 'rgb_map_left': rgb_map_left.to('cpu'),
-           'rgb_map_right': rgb_map_right.to('cpu')}
+    rgb_map= rgb_map.to('cpu')
+    disp_map = disp_map.to('cpu')
+    acc_map = acc_map.to('cpu')
+    rgb_map_left= rgb_map_left.to('cpu')
+    rgb_map_right= rgb_map_right.to('cpu')
+
+
+
+    ret = {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map': acc_map, 'rgb_map_left': rgb_map_left,
+           'rgb_map_right': rgb_map_right}
     if retraw:
         ret['raw'] = raw_mu
+
     if N_importance > 0:
         ret['rgb0'] = rgb_map_0
         ret['disp0'] = disp_map_0
@@ -633,9 +646,9 @@ def config_parser():
                         help='learning rate')
     parser.add_argument("--lrate_decay", type=int, default=500,  ## to make lrate go from 5e-4 to 5e-6 as in papers
                         help='exponential learning rate decay (in 1000 steps)')
-    parser.add_argument("--chunk", type=int, default=1024 * 1,
+    parser.add_argument("--chunk", type=int, default=1024 * 32,
                         help='number of rays processed in parallel, decrease if running out of memory')
-    parser.add_argument("--netchunk", type=int, default=1024 * 1,
+    parser.add_argument("--netchunk", type=int, default=1024 * 64,
                         help='number of pts sent through network in parallel, decrease if running out of memory')
     parser.add_argument("--no_batching", action='store_true',
                         help='only take random rays from 1 image at a time')
