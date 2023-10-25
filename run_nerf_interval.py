@@ -529,7 +529,7 @@ def render_rays(ray_batch,
         eps = (pre_eps * epsilon).to(torch.float32)
     else:
         eps = epsilon * torch.ones(N_rays * N_samples, 1)
-
+    #
     raw_mu, raw_eps = network_query_fn(pts, viewdirs, network_fn, eps)
 
     # raw_eps[:, :, -1] = 0
@@ -543,7 +543,14 @@ def render_rays(ray_batch,
     rgb_map_left, rgb_map_right = raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                   pytest=pytest)
 
+    rgb_map = rgb_map.to('cpu')
+    disp_map = disp_map.to('cpu')
+    acc_map = acc_map.to('cpu')
+    rgb_map_left = rgb_map_left.to('cpu')
+    rgb_map_right = rgb_map_right.to('cpu')
 
+
+    print("eg")
     if N_importance > 0:
         rgb_map_0, disp_map_0, acc_map_0, rgb_map_left_0, rgb_map_right_0 = rgb_map, disp_map, acc_map, rgb_map_left, rgb_map_right
 
@@ -569,6 +576,7 @@ def render_rays(ray_batch,
             eps = epsilon * torch.ones(N_rays * (N_samples + N_importance), 1)
 
         run_fn = network_fn if network_fine is None else network_fine
+
         raw_mu, raw_eps = network_query_fn(pts, viewdirs, run_fn, eps)
 
         raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
@@ -579,8 +587,8 @@ def render_rays(ray_batch,
         rgb_map_left, rgb_map_right = raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                       pytest=pytest)
 
-    ret = {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map': acc_map, 'rgb_map_left': rgb_map_left,
-           'rgb_map_right': rgb_map_right}
+    ret = {'rgb_map': rgb_map.to('cpu'), 'disp_map': disp_map.to('cpu'), 'acc_map': acc_map.to('cpu'), 'rgb_map_left': rgb_map_left.to('cpu'),
+           'rgb_map_right': rgb_map_right.to('cpu')}
     if retraw:
         ret['raw'] = raw_mu
     if N_importance > 0:
@@ -625,9 +633,9 @@ def config_parser():
                         help='learning rate')
     parser.add_argument("--lrate_decay", type=int, default=500,  ## to make lrate go from 5e-4 to 5e-6 as in papers
                         help='exponential learning rate decay (in 1000 steps)')
-    parser.add_argument("--chunk", type=int, default=1024 * 32,
+    parser.add_argument("--chunk", type=int, default=1024 * 1,
                         help='number of rays processed in parallel, decrease if running out of memory')
-    parser.add_argument("--netchunk", type=int, default=1024 * 64,
+    parser.add_argument("--netchunk", type=int, default=1024 * 1,
                         help='number of pts sent through network in parallel, decrease if running out of memory')
     parser.add_argument("--no_batching", action='store_true',
                         help='only take random rays from 1 image at a time')
@@ -1067,14 +1075,14 @@ def train():
         if use_batching:
             # Random over all images
             batch = rays_rgb[i_batch:i_batch + N_rand] # [B, 2+1, 3*?]
-            mask = lossmult2[i_batch:i_batch + N_rand].to(device)
+            mask = lossmult2[i_batch:i_batch + N_rand]
             HH = H_train[i_batch: i_batch + N_rand].to(device)
             # for making the loss like in MipNeRF:
             # "loss of each pixel by the area
             # of that pixel’s footprint in the original image (the loss for pixels f12rom the 1/4 images is scaled by 16, etc)
             # so that the few low-resolution pixels have comparable influence to the many high-resolution pixels. "
             batch = torch.transpose(batch, 0, 1)
-            batch_rays, target_s = batch[:2].to(device), batch[2].to(device)
+            batch_rays, target_s = batch[:2].to(device), batch[2]
 
             i_batch += N_rand
             if i_batch >= rays_rgb.shape[0]:
@@ -1138,6 +1146,8 @@ def train():
                                                                      verbose=i < 10, retraw=True, H_train = HH,
                                                                      **render_kwargs_train)
 
+        # rgb = rgb.to('cpu')
+        # rgb_map_left, rgb_map_right = rgb_map_left.to('cpu'), rgb_map_right.to('cpu')
 
         if i % 1000 == 0:
             print("target : ", target_s[0:3])
