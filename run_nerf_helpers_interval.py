@@ -115,8 +115,6 @@ class NeRF(nn.Module):
         input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
         # eps = epsilon * torch.ones_like(input_pts)
         E = epsilon.unsqueeze(1).repeat(1, 1, np.shape(input_pts)[-1]).reshape(-1, np.shape(input_pts)[-1])
-        # E = epsilon.unsqueeze(1).repeat(1, np.shape(input_pts)[-1]).reshape(-1, np.shape(input_pts)[-1])
-
         # E  = epsilon
 
         # print
