@@ -1141,6 +1141,7 @@ def ddp_train_nerf(gpu, args):
                 H_train = H_train[rand_idx]
                 i_batch = 0
 
+            print('!!!')
             partitions = list(range(0, batch_rays.shape[0], int(batch_rays.shape[0] / (args.world_size))))
             partitions.append(batch_rays.shape[0])
 
