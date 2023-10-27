@@ -79,7 +79,7 @@ def batchify_rays(rays_flat, eps, chunk=1024 * 32, **kwargs):
     """
     all_ret = {}
     for i in range(0, rays_flat.shape[0], chunk):
-        ret = render_rays(rays_flat[i:i + chunk].detach().cpu(), epsilon=eps, **kwargs)
+        ret = render_rays(rays_flat[i:i + chunk].detach().cpu(), epsilon=eps.detach().cpu(), **kwargs)
         for k in ret:
             if k not in all_ret:
                 all_ret[k] = []
