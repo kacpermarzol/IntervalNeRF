@@ -1149,9 +1149,7 @@ def ddp_train_nerf(gpu, args):
             partitions.append(batch_rays.shape[1])
 
             batch_rays_ddp = batch_rays[:, partitions[rank]: partitions[rank + 1]]
-            HH_ddp = HH[:, partitions[rank]: partitions[rank + 1]]
-            print('!!!!')
-            print(HH_ddp.shape)
+            HH_ddp = HH[partitions[rank]: partitions[rank + 1]]
 
         else:
             print("not implemented")
