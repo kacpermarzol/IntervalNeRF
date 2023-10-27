@@ -1021,7 +1021,7 @@ def ddp_train_nerf(gpu, args):
         i_batch = 0
         i_batch_test = 0
 
-        # Move training data to GPU
+    # Move training data to GPU
     # if use_batching:
     poses = torch.from_numpy(poses)
     # images = torch.Tensor(images).to(device)
@@ -1120,6 +1120,8 @@ def ddp_train_nerf(gpu, args):
         # Sample random ray batch
         if use_batching:
             # Random over all images
+            # use to partition data
+
             batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
             mask = lossmult2[i_batch:i_batch + N_rand]
             HH = H_train[i_batch: i_batch + N_rand].to(device)
@@ -1138,6 +1140,12 @@ def ddp_train_nerf(gpu, args):
                 lossmult2 = lossmult2[rand_idx]
                 H_train = H_train[rand_idx]
                 i_batch = 0
+
+            partitions = list(range(0, batch_rays.shape[0], int(batch_rays.shape[0] / (args.world_size))))
+            partitions.append(batch_rays.shape[0])
+
+            batch_rays = batch_rays[partitions[rank]: partitions[rank + 1]]
+            HH = HH[partitions[rank]: partitions[rank + 1]]
 
         else:
             print("not implemented")
@@ -1239,6 +1247,9 @@ def ddp_train_nerf(gpu, args):
 
         loss.backward()
         optimizer.step()
+
+        dist.all_reduce(loss, op=dist.ReduceOp.SUM)
+        loss /= args.world_size
 
         # NOTE: IMPORTANT!
         ###   update learning rate   ###
