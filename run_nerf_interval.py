@@ -1420,7 +1420,7 @@ def train():
 
     if args.world_size == -1:
         args.world_size = torch.cuda.device_count()
-        logger.info('Using # gpus: {}'.format(args.world_size))
+        #logger.log('Using # gpus: {}'.format(args.world_size))
     torch.multiprocessing.spawn(ddp_train_nerf,
                                 args=(args, logger),
                                 nprocs=args.world_size,
