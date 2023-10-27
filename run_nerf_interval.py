@@ -1,4 +1,6 @@
 import os, sys
+from distutils import dist
+
 import numpy as np
 import imageio
 import json
@@ -763,21 +765,23 @@ def config_parser():
 
     return parser
 
-def ddp_train_nerf(rank, args):
+def ddp_train_nerf(gpu, args):
     ###### set up multi-processing
-    setup(rank, args.world_size)
+    gpu_list = [int(gpu) for gpu in args.gpus.split(',')]
+    rank = sum(gpu_list[:args.id]) + gpu
+    dist.init_process_group(backend='gloo', init_method='env://', world_size=args.world_size, rank=rank)
     ###### set up logger
 
     ###### decide chunk size according to gpu memory
     #logger.info('gpu_mem: {}'.format(torch.cuda.get_device_properties(rank).total_memory))
-    if torch.cuda.get_device_properties(rank).total_memory / 1e9 > 14:
-        #logger.info('setting batch size according to 24G gpu')
-        args.N_rand = 1024
-        args.chunk_size = 8192
-    else:
-        #logger.info('setting batch size according to 12G gpu')
-        args.N_rand = 512
-        args.chunk_size = 4096
+    # if torch.cuda.get_device_properties(gpu).total_memory / 1e9 > 14:
+    #     #logger.info('setting batch size according to 24G gpu')
+    #     args.N_rand = 1024
+    #     args.chunk_size = 8192
+    # else:
+    #     #logger.info('setting batch size according to 12G gpu')
+    #     args.N_rand = 512
+    #     args.chunk_size = 4096
 
     torch.distributed.barrier()
 
@@ -1105,9 +1109,9 @@ def ddp_train_nerf(rank, args):
     print('VAL views are', i_val)
 
     # make sure different processes sample different rays
-    np.random.seed((rank + 1) * 777)
+    np.random.seed((gpu + 1) * 777)
     # make sure different processes have different perturbations in depth samples
-    torch.manual_seed((rank + 1) * 777)
+    torch.manual_seed((gpu + 1) * 777)
 
     epsilon = args.eps
     start = start + 1
