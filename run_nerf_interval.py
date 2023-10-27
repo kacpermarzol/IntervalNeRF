@@ -734,6 +734,8 @@ def config_parser():
 
     parser.add_argument("--save_every", type=int, default=1000, help="The number of steps to run eval on testset")
     parser.add_argument("--metrics_only", type=bool, default=False)
+    parser.add_argument("--log_every", type=int, default=10, help="The number of steps to log into tensorboard")
+
 
 
 
@@ -1072,7 +1074,7 @@ def train():
             return
 
 
-    N_iters = 500001 + 1
+    N_iters = 1000001 + 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
@@ -1174,12 +1176,11 @@ def train():
         # loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
         loss_spec = interval_loss2(target_s, rgb_map_left, rgb_map_right, mask)
 
-        logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
-        logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
+
 
         psnr = mse2psnr(loss_fit)
 
-        logger.add_scalar('train/fine_psnr', psnr, global_step=i)
+
 
         if 'rgb0' in extras:
             # img_loss0 = img2mse(extras['rgb0'], target_s)
@@ -1187,33 +1188,38 @@ def train():
             # loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
             loss_spec0 = interval_loss2(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'], mask)
 
-            logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
-            logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
-
             psnr0 = mse2psnr(img_loss0)
 
-            logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
-
-            loss_fit = loss_fit + img_loss0
-            loss_spec = loss_spec + loss_spec0
+            loss_fit_final = loss_fit + img_loss0
+            loss_spec_final = loss_spec + loss_spec0
 
 
-        loss = kappa * loss_fit + (1 - kappa) * loss_spec
+        loss = kappa * loss_fit_final + (1 - kappa) * loss_spec_final
 
-
-
-        logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
 
         logpsnr = (psnr.item() + psnr0.item()) / 2
-        logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
-        logger.add_scalar('train/lr', new_lrate, global_step=i)
+
+
 
         loss.backward()
         optimizer.step()
 
+
+        #loggers
+        if i % args.log_every == 0:
+            logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
+            logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
+            logger.add_scalar('train/fine_psnr', psnr, global_step=i)
+            logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
+            logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
+            logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
+            logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
+            logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
+            logger.add_scalar('train/lr', new_lrate, global_step=i)
+
+
         # NOTE: IMPORTANT!
         ###   update learning rate   ###
-
 
         decay_rate = 0.1
         decay_steps = args.lrate_decay * 1000
