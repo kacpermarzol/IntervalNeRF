@@ -1143,9 +1143,10 @@ def ddp_train_nerf(gpu, args):
 
             print('!!!')
             print(batch_rays.shape)
+            print(target_s.shape)
             print(args.world_size)
-            partitions = list(range(0, batch_rays.shape[0], int(batch_rays.shape[0] / (args.world_size))))
-            partitions.append(batch_rays.shape[0])
+            partitions = list(range(0, batch_rays.shape[1], int(batch_rays.shape[1] / (args.world_size))))
+            partitions.append(batch_rays.shape[1])
 
             print(partitions)
 
