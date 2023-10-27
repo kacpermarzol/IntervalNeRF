@@ -1243,7 +1243,7 @@ def ddp_train_nerf(gpu, args):
             # img_loss0 = img2mse(extras['rgb0'], target_s)
             img_loss0 = img2mse2(extras['rgb0'], target_s_ddp, mask_ddp)
             # loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
-            loss_spec0 = interval_loss2(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'], mask_ddp)
+            loss_spec0 = interval_loss2(target_s_ddp, extras['rgb_map_left0'], extras['rgb_map_right0'], mask_ddp)
 
             #logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
             #logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
