@@ -716,6 +716,14 @@ def config_parser():
     parser.add_argument("--llffhold", type=int, default=8,
                         help='will take every 1/N images as LLFF test set, paper uses 8')
 
+    # distributed training options
+    parser.add_argument('-n', '--nodes', default=1, type=int, metavar='N',
+                        help='number of data loading workers (default: 4)')
+    parser.add_argument('-g', '--gpus', default="", type=str,
+                        help='number of gpus of each node')
+    parser.add_argument('-i', '--id', default=0, type=int,
+                        help='the id of the node which is determined by the correponding index in the gpu list')
+
     # logging/saving options
     parser.add_argument("--i_print", type=int, default=1000000,
                         help='frequency of console printout and metric loggin')
@@ -743,6 +751,8 @@ def config_parser():
 def train():
     parser = config_parser()
     args = parser.parse_args()
+    gpu_list = [int(gpu) for gpu in args.gpus.split(',')]
+    print(gpu_list)
     logger = tb.SummaryWriter(log_dir=f"runs/{args.expname}")
     # Load data
     K = None
