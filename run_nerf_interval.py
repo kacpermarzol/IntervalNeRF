@@ -1241,7 +1241,7 @@ def ddp_train_nerf(gpu, args):
 
         if 'rgb0' in extras:
             # img_loss0 = img2mse(extras['rgb0'], target_s)
-            img_loss0 = img2mse2(extras['rgb0'], target_s, mask_ddp)
+            img_loss0 = img2mse2(extras['rgb0'], target_s_ddp, mask_ddp)
             # loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
             loss_spec0 = interval_loss2(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'], mask_ddp)
 
