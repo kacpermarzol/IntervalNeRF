@@ -222,7 +222,7 @@ def setup(rank, world_size):
 def cleanup():
     torch.distributed.destroy_process_group()
 
-def create_nerf(args):
+def create_nerf(args, gpu):
     """Instantiate NeRF's MLP model.
     """
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
@@ -236,7 +236,7 @@ def create_nerf(args):
     model = NeRF(D=args.netdepth, W=args.netwidth,
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
                  input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
-    ddp_model = DDP(model, device_ids=[args.gpus])
+    ddp_model = DDP(model, device_ids=[gpu])
     grad_vars = list(ddp_model.parameters())
 
     model_fine = None
@@ -244,7 +244,7 @@ def create_nerf(args):
         model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
                           input_ch=input_ch, output_ch=output_ch, skips=skips,
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
-        ddp_fine_model = DDP(model_fine, device_ids=[args.gpus])
+        ddp_fine_model = DDP(model_fine, device_ids=[gpu])
         grad_vars += list(ddp_fine_model.parameters())
 
     network_query_fn = lambda inputs, viewdirs, network_fn, eps: run_network(inputs, viewdirs, network_fn, eps,
@@ -914,7 +914,7 @@ def ddp_train_nerf(gpu, args):
             file.write(open(args.config, 'r').read())
 
     # Create nerf model
-    render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
+    render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args, gpu)
     global_step = start
 
     bds_dict = {
