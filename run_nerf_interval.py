@@ -417,8 +417,10 @@ def raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std=0, white_
     # = exp(-s_1*d_1) * exp(-s_2*d_2) * ... * exp(-s_{i-1} * d_{i-1})) =
     # = (1-a_1) * (1-a_2) * ... * (1-a_{i-1})
 
-    T_left = torch.cumprod(torch.cat([torch.ones((alpha_left.shape[0], 1)), 1. - alpha_left + 1e-10], -1), -1)[:, :-1]
-    T_right = torch.cumprod(torch.cat([torch.ones((alpha_right.shape[0], 1)), 1. - alpha_right + 1e-10], -1), -1)[:,:-1]
+    t1 = torch.ones((alpha_left.shape[0], 1)).to(dists.device)
+    t1_2 = torch.ones((alpha_right.shape[0], 1)).to(dists.device)
+    T_left = torch.cumprod(torch.cat([t1, 1. - alpha_left + 1e-10], -1), -1)[:, :-1]
+    T_right = torch.cumprod(torch.cat([t1_2, 1. - alpha_right + 1e-10], -1), -1)[:,:-1]
 
     assert assert_all_nonnegative(alpha_left), "Not all elements are nonnegative (alpha_left)"
     assert assert_all_nonnegative(alpha_right), "Not all elements are nonnegative (alpha_right)"
