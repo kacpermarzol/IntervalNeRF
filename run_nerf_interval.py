@@ -1144,6 +1144,8 @@ def ddp_train_nerf(gpu, args):
             partitions = list(range(0, batch_rays.shape[0], int(batch_rays.shape[0] / (args.world_size))))
             partitions.append(batch_rays.shape[0])
 
+            print(partitions)
+
             batch_rays_ddp = batch_rays[partitions[rank]: partitions[rank + 1]]
             HH_ddp = HH[partitions[rank]: partitions[rank + 1]]
 
