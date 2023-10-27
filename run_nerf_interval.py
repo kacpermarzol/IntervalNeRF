@@ -760,7 +760,23 @@ def config_parser():
 
     return parser
 
-def ddp_train_nerf(rank, args):
+def ddp_train_nerf(rank, args, logger):
+    ###### set up multi-processing
+    setup(rank, args.world_size)
+    ###### set up logger
+
+    ###### decide chunk size according to gpu memory
+    logger.info('gpu_mem: {}'.format(torch.cuda.get_device_properties(rank).total_memory))
+    if torch.cuda.get_device_properties(rank).total_memory / 1e9 > 14:
+        logger.info('setting batch size according to 24G gpu')
+        args.N_rand = 1024
+        args.chunk_size = 8192
+    else:
+        logger.info('setting batch size according to 12G gpu')
+        args.N_rand = 512
+        args.chunk_size = 4096
+
+
     # Load data
     K = None
 
@@ -1403,10 +1419,9 @@ def train():
         args.world_size = torch.cuda.device_count()
         logger.info('Using # gpus: {}'.format(args.world_size))
     torch.multiprocessing.spawn(ddp_train_nerf,
-                                args=(args,),
+                                args=(args, logger),
                                 nprocs=args.world_size,
                                 join=True)
-
 
 
 if __name__ == '__main__':
