@@ -1,5 +1,5 @@
 import os, sys
-from distutils import dist
+import torch.distributed as dist
 
 import numpy as np
 import imageio
