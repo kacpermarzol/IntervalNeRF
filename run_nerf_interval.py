@@ -783,8 +783,6 @@ def ddp_train_nerf(gpu, args):
     #     args.N_rand = 512
     #     args.chunk_size = 4096
 
-    torch.distributed.barrier()
-
     # Load data
     K = None
 
