@@ -1144,8 +1144,8 @@ def ddp_train_nerf(gpu, args):
             partitions = list(range(0, batch_rays.shape[0], int(batch_rays.shape[0] / (args.world_size))))
             partitions.append(batch_rays.shape[0])
 
-            batch_rays = batch_rays[partitions[rank]: partitions[rank + 1]]
-            HH = HH[partitions[rank]: partitions[rank + 1]]
+            batch_rays_ddp = batch_rays[partitions[rank]: partitions[rank + 1]]
+            HH_ddp = HH[partitions[rank]: partitions[rank + 1]]
 
         else:
             print("not implemented")
@@ -1195,8 +1195,8 @@ def ddp_train_nerf(gpu, args):
         # else:
         #     kappa = 0.5
 
-        rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays,
-                                                                     verbose=i < 10, retraw=True, H_train=HH,
+        rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_ddp,
+                                                                     verbose=i < 10, retraw=True, H_train=HH_ddp,
                                                                      **render_kwargs_train)
 
         # rgb = rgb.to('cpu')
