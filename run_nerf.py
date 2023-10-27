@@ -539,7 +539,6 @@ def config_parser():
 def train():
     parser = config_parser()
     args = parser.parse_args()
-    logger = tb.SummaryWriter(log_dir=f"runs/{args.expname}")
 
     # Load data
     K = None
@@ -681,6 +680,17 @@ def train():
 
     # Create nerf model
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
+    ##### important!!!
+    # make sure different processes sample different rays
+    np.random.seed((rank + 1) * 777)
+    # make sure different processes have different perturbations in depth samples
+    torch.manual_seed((rank + 1) * 777)
+
+    ##### only main process should do the logging
+    if rank == 0:
+        logger = SummaryWriter(os.path.join(args.basedir, 'summaries', args.expname))
+
+
     global_step = start
 
     bds_dict = {

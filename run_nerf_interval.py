@@ -779,6 +779,7 @@ def ddp_train_nerf(rank, args, logger):
         args.N_rand = 512
         args.chunk_size = 4096
 
+    torch.distributed.barrier()
 
     # Load data
     K = None
@@ -1416,13 +1417,12 @@ def train():
     parser = config_parser()
     args = parser.parse_args()
     gpu_list = [int(gpu) for gpu in args.gpus.split(',')]
-    logger = tb.SummaryWriter(log_dir=f"runs/{args.expname}")
 
     if args.world_size == -1:
         args.world_size = torch.cuda.device_count()
         #logger.log('Using # gpus: {}'.format(args.world_size))
     torch.multiprocessing.spawn(ddp_train_nerf,
-                                args=(args, logger),
+                                args=(args),
                                 nprocs=args.world_size,
                                 join=True)
 
