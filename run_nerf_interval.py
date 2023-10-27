@@ -156,6 +156,9 @@ def render(H, W, K, eps, chunk=1024 * 32, rays=None, H_train=None, c2w=None, ndc
         # if c2w is not None:
         #     rays = torch.cat([rays, viewdirs], -1)
         # else:
+        print(rays.shape)
+        print(viewdirs.shape)
+        print(distances.shape)
         rays = torch.cat([rays, viewdirs, distances, pixel], -1)
 
     # Render and reshape
