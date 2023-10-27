@@ -1417,19 +1417,15 @@ def train():
     parser = config_parser()
     args = parser.parse_args()
     gpu_list = [int(gpu) for gpu in args.gpus.split(',')]
-
-    gpu_list = [int(gpu) for gpu in args.gpus.split(',')]
     args.world_size = sum(gpu_list)
     print("This code is running. Check your master IP address if you see nothing after a while.")
-    args.world_size = sum(gpu_list)
     # This is the master node's IP
     os.environ["MASTER_ADDR"] = "192.168.227.236"
     os.environ["MASTER_PORT"] = "29610"
         #logger.log('Using # gpus: {}'.format(args.world_size))
     torch.multiprocessing.spawn(ddp_train_nerf,
-                                args=(args,),
-                                nprocs=args.world_size,
-                                join=True)
+                                nprocs=gpu_list[args.id],
+                                args=(args,))
 
 
 if __name__ == '__main__':
