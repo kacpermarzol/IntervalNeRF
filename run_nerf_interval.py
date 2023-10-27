@@ -115,6 +115,7 @@ def render(H, W, K, eps, chunk=1024 * 32, rays=None, H_train=None, c2w=None, ndc
     if c2w is not None:
         # special case to render full image
         rays_o, rays_d = get_rays(H, W, K, c2w)
+        rays_o, rays_d = rays_o.to(device), rays_d.to(device)
     else:
         # use provided ray batch
         rays_o, rays_d = rays
@@ -550,7 +551,6 @@ def render_rays(ray_batch,
     rgb_map_right = rgb_map_right.to('cpu')
 
 
-    print("eg")
     if N_importance > 0:
         rgb_map_0, disp_map_0, acc_map_0, rgb_map_left_0, rgb_map_right_0 = rgb_map, disp_map, acc_map, rgb_map_left, rgb_map_right
 
@@ -634,11 +634,11 @@ def config_parser():
     # training options
     parser.add_argument("--netdepth", type=int, default=8,
                         help='layers in network')
-    parser.add_argument("--netwidth", type=int, default=256,
+    parser.add_argument("--netwidth", type=int, default=200,
                         help='channels per layer')
     parser.add_argument("--netdepth_fine", type=int, default=8,
                         help='layers in fine network')
-    parser.add_argument("--netwidth_fine", type=int, default=256,
+    parser.add_argument("--netwidth_fine", type=int, default=200,
                         help='channels per layer in fine network')
     parser.add_argument("--N_rand", type=int, default=32 * 32 * 4,
                         help='batch size (number of random rays per gradient step)')
@@ -719,9 +719,9 @@ def config_parser():
     # logging/saving options
     parser.add_argument("--i_print", type=int, default=1000000,
                         help='frequency of console printout and metric loggin')
-    parser.add_argument("--i_img", type=int, default=10000,
+    parser.add_argument("--i_img", type=int, default=5000,
                         help='frequency of tensorboard image logging')
-    parser.add_argument("--i_weights", type=int, default=25000,
+    parser.add_argument("--i_weights", type=int, default=20000,
                         help='frequency of weight ckpt saving')
     parser.add_argument("--i_testset", type=int, default=50000,
                         help='frequency of testset saving')
@@ -1019,11 +1019,11 @@ def train():
                 kk = np.array([[ff, 0, 0.5 * ww],
                                [0, ff, 0.5 * hh],
                                [0, 0, 1]])
-                pose = poses[i, :3, :4]
+                pose = poses[i, :3, :4].to(device)
 
                 rgb, _, _, _, _, _ = render(hh, ww, kk, eps=args.eps, H_train=hh, chunk=args.chunk, c2w=pose,
                                                 **render_kwargs_test)
-                rgb = rgb.view(hh, ww, 3).cpu()
+                rgb = rgb.view(hh, ww, 3)
 
                 psnr = mse2psnr(img2mse(rgb, images[i]))
 
@@ -1072,7 +1072,7 @@ def train():
             return
 
 
-    N_iters = 1000001 + 1
+    N_iters = 500001 + 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
@@ -1237,14 +1237,15 @@ def train():
         #####           end            #####
 
         if i % args.save_every == 0:
-            batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand].to(device)  # [B, 2+1, 3*?]
+            batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand]  # [B, 2+1, 3*?]
             HH = H_test[i_batch_test : i_batch_test + N_rand].to(device)
             i_batch_test += N_rand
             batch_test = torch.transpose(batch_test, 0, 1)
-            batch_rays_test, target_s_test = batch_test[:2], batch_test[2]
+            batch_rays_test, target_s_test = batch_test[:2].to(device), batch_test[2]
             with torch.no_grad():
                 rgb, _, _, _, _, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_test,
                                                  verbose=i < 10, retraw=True, H_train = HH, **render_kwargs_test)
+
                 loss_fit = img2mse(rgb, target_s_test)
                 psnr = mse2psnr(loss_fit)
                 logger.add_scalar('eval/fine_psnr', psnr, global_step=i)
@@ -1326,8 +1327,8 @@ def train():
                            [0, ff, 0.5 * hh],
                            [0, 0, 1]])
 
-            HH = torch.ones(hh**2, 1) * hh
-            pose = poses[img_i, :3, :4]
+            HH = (torch.ones(hh**2, 1) * hh).to(device)
+            pose = poses[img_i, :3, :4].to(device)
             with torch.no_grad():
                 rgb, _, _, _, _, _ = \
                     render(hh, ww, kk, eps=eps, chunk=args.chunk, c2w=pose, H_train = HH,
@@ -1336,11 +1337,11 @@ def train():
                 rgb = rgb.view(hh, ww, 3)
                 logger.add_image('image', rgb, dataformats='HWC', global_step=i)
 
-                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose, H_train = HH,
-                                            **render_kwargs_test)
-                rgb = rgb.view(hh, ww, 3)
-
-                logger.add_image('image_eps0', rgb, dataformats='HWC', global_step=i)
+                # rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose, H_train = HH,
+                #                             **render_kwargs_test)
+                # rgb = rgb.view(hh, ww, 3)
+                #
+                # logger.add_image('image_eps0', rgb, dataformats='HWC', global_step=i)
 
         if i % args.i_print == 0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {logpsnr}")
