@@ -138,12 +138,8 @@ def render(H, W, K, eps, chunk=1024 * 32, rays=None, H_train=None, c2w=None, ndc
 
     if H_train is not None:
         pixel = 1 / H_train
-        print('!!!')
-        print(pixel.shape)
         if np.shape(H_train) == ():
             pixel = torch.ones_like(distances) * pixel
-        print('!!!!!')
-        print(pixel.shape)
 
 
 
@@ -1154,6 +1150,8 @@ def ddp_train_nerf(gpu, args):
 
             batch_rays_ddp = batch_rays[:, partitions[rank]: partitions[rank + 1]]
             HH_ddp = HH[:, partitions[rank]: partitions[rank + 1]]
+            print('!!!!')
+            print(HH_ddp.shape)
 
         else:
             print("not implemented")
