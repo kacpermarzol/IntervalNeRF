@@ -736,6 +736,9 @@ def config_parser():
                         help='number of gpus of each node')
     parser.add_argument('-i', '--id', default=0, type=int,
                         help='the id of the node which is determined by the correponding index in the gpu list')
+    # multiprocess learning
+    parser.add_argument("--world_size", type=int, default='-1',
+                        help='number of processes')
 
     # logging/saving options
     parser.add_argument("--i_print", type=int, default=1000000,
