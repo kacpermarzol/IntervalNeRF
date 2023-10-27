@@ -224,7 +224,7 @@ def create_nerf(args):
     model = NeRF(D=args.netdepth, W=args.netwidth,
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
                  input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
-    ddp_model = DDP(model, device_ids=[args.gpu])
+    ddp_model = DDP(model, device_ids=[args.gpus])
     grad_vars = list(ddp_model.parameters())
 
     model_fine = None
@@ -232,7 +232,7 @@ def create_nerf(args):
         model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
                           input_ch=input_ch, output_ch=output_ch, skips=skips,
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
-        ddp_fine_model = DDP(model_fine, device_ids=[args.gpu])
+        ddp_fine_model = DDP(model_fine, device_ids=[args.gpus])
         grad_vars += list(ddp_fine_model.parameters())
 
     network_query_fn = lambda inputs, viewdirs, network_fn, eps: run_network(inputs, viewdirs, network_fn, eps,
@@ -276,9 +276,9 @@ def create_nerf(args):
         'network_query_fn': network_query_fn,
         'perturb': args.perturb,
         'N_importance': args.N_importance,
-        'network_fine': model_fine,
+        'network_fine': ddp_fine_model,
         'N_samples': args.N_samples,
-        'network_fn': model,
+        'network_fn': ddp_model,
         'use_viewdirs': args.use_viewdirs,
         'white_bkgd': args.white_bkgd,
         'raw_noise_std': args.raw_noise_std,
