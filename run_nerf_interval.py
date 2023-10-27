@@ -1279,8 +1279,8 @@ def ddp_train_nerf(gpu, args):
         #####           end            #####
 
         if i % args.save_every == 0:
-            batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand].to(device)  # [B, 2+1, 3*?]
-            HH = H_test[i_batch_test: i_batch_test + N_rand].to(device)
+            batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand].to(gpu)  # [B, 2+1, 3*?]
+            HH = H_test[i_batch_test: i_batch_test + N_rand].to(gpu)
             i_batch_test += N_rand
             batch_test = torch.transpose(batch_test, 0, 1)
             batch_rays_test, target_s_test = batch_test[:2], batch_test[2]
