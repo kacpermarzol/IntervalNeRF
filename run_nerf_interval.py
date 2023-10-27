@@ -209,6 +209,14 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, eps, gt_imgs=None, s
 
     return rgbs, disps
 
+def setup(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    # port = np.random.randint(12355, 12399)
+    # os.environ['MASTER_PORT'] = '{}'.format(port)
+    os.environ['MASTER_PORT'] = '12355'
+    # initialize the process group
+    torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
+
 
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
