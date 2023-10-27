@@ -609,12 +609,17 @@ def render_rays(ray_batch,
 
         raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
 
-        rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu, z_vals, rays_d, raw_noise_std, white_bkgd,
+        rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu.detach().cpu(),
+                                                                     z_vals.detach().cpu(),
+                                                                     rays_d.detach().cpu(), raw_noise_std, white_bkgd,
                                                                      pytest=pytest)
 
         del weights
 
-        rgb_map_left, rgb_map_right = raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std, white_bkgd,
+        rgb_map_left, rgb_map_right = raw2outputs_eps(raw_left.detach().cpu(),
+                                                      raw_right.detach().cpu(),
+                                                      z_vals.detach().cpu(),
+                                                      rays_d.detach().cpu(), raw_noise_std, white_bkgd,
                                                       pytest=pytest)
 
     rgb_map= rgb_map.to('cpu')
