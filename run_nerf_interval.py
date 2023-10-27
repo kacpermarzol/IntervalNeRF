@@ -1422,7 +1422,7 @@ def train():
         args.world_size = torch.cuda.device_count()
         #logger.log('Using # gpus: {}'.format(args.world_size))
     torch.multiprocessing.spawn(ddp_train_nerf,
-                                args=(args),
+                                args=(args,),
                                 nprocs=args.world_size,
                                 join=True)
 
