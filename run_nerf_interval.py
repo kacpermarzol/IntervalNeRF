@@ -1162,6 +1162,8 @@ def ddp_train_nerf(gpu, args):
 
             batch_rays_ddp = batch_rays[:, partitions[rank]: partitions[rank + 1]]
             HH_ddp = HH[partitions[rank]: partitions[rank + 1]]
+            print('!!!')
+            print(mask.shape)
             mask = mask[partitions[rank]: partitions[rank + 1]]
 
         else:
