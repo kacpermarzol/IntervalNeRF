@@ -18,6 +18,7 @@ from load_llff import load_llff_data
 from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_LINEMOD import load_LINEMOD_data
+from torch.nn.parallel import DistributedDataParallel as DDP
 from load_multiscale import load_multiscale_data
 
 # from functools import partialmethod
@@ -223,14 +224,16 @@ def create_nerf(args):
     model = NeRF(D=args.netdepth, W=args.netwidth,
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
                  input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
-    grad_vars = list(model.parameters())
+    ddp_model = DDP(model, device_ids=[args.gpu])
+    grad_vars = list(ddp_model.parameters())
 
     model_fine = None
     if args.N_importance > 0:
         model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
                           input_ch=input_ch, output_ch=output_ch, skips=skips,
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
-        grad_vars += list(model_fine.parameters())
+        ddp_fine_model = DDP(model_fine, device_ids=[args.gpu])
+        grad_vars += list(ddp_fine_model.parameters())
 
     network_query_fn = lambda inputs, viewdirs, network_fn, eps: run_network(inputs, viewdirs, network_fn, eps,
                                                                              embed_fn=embed_fn,
