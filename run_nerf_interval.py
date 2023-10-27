@@ -1232,12 +1232,12 @@ def ddp_train_nerf(gpu, args):
         # loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
         loss_spec = interval_loss2(target_s_ddp, rgb_map_left, rgb_map_right, mask_ddp)
 
-        logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
-        logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
+        #logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
+        #logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
 
         psnr = mse2psnr(loss_fit)
 
-        logger.add_scalar('train/fine_psnr', psnr, global_step=i)
+        #logger.add_scalar('train/fine_psnr', psnr, global_step=i)
 
         if 'rgb0' in extras:
             # img_loss0 = img2mse(extras['rgb0'], target_s)
@@ -1245,23 +1245,23 @@ def ddp_train_nerf(gpu, args):
             # loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
             loss_spec0 = interval_loss2(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'], mask_ddp)
 
-            logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
-            logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
+            #logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
+            #logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
 
             psnr0 = mse2psnr(img_loss0)
 
-            logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
+            #logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
 
             loss_fit = loss_fit + img_loss0
             loss_spec = loss_spec + loss_spec0
 
         loss = kappa * loss_fit + (1 - kappa) * loss_spec
 
-        logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
+        #logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
 
-        logpsnr = (psnr.item() + psnr0.item()) / 2
-        logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
-        logger.add_scalar('train/lr', new_lrate, global_step=i)
+        #logpsnr = (psnr.item() + psnr0.item()) / 2
+        #logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
+        #logger.add_scalar('train/lr', new_lrate, global_step=i)
 
         loss.backward()
         optimizer.step()
@@ -1292,7 +1292,7 @@ def ddp_train_nerf(gpu, args):
         # print(f"Step: {global_step}, Loss: {loss}, Time: {dt}")
         #####           end            #####
 
-        if i % args.save_every == 0:
+        if i % args.save_every == 0 and rank == 0:
             batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand].to(gpu)  # [B, 2+1, 3*?]
             HH = H_test[i_batch_test: i_batch_test + N_rand].to(gpu)
             i_batch_test += N_rand
@@ -1303,30 +1303,30 @@ def ddp_train_nerf(gpu, args):
                                                  verbose=i < 10, retraw=True, H_train=HH, **render_kwargs_test)
                 loss_fit = img2mse(rgb, target_s_test)
                 psnr = mse2psnr(loss_fit)
-                logger.add_scalar('eval/fine_psnr', psnr, global_step=i)
+                #logger.add_scalar('eval/fine_psnr', psnr, global_step=i)
 
                 if 'rgb0' in extras:
                     img_loss0 = img2mse(extras['rgb0'], target_s_test)
                     psnr0 = mse2psnr(img_loss0)
-                    logger.add_scalar('eval/coarse_psnr', psnr0, global_step=i)
+                    #logger.add_scalar('eval/coarse_psnr', psnr0, global_step=i)
 
                     avg_psnr = (psnr + psnr0) / 2
-                    logger.add_scalar('eval/avg_psnr', avg_psnr, global_step=i)
+                    #logger.add_scalar('eval/avg_psnr', avg_psnr, global_step=i)
 
                 rgb, _, _, _, _, extras = render(1, 1, 1, 0, chunk=args.chunk, rays=batch_rays_test,
                                                  verbose=i < 10, retraw=True, H_train=HH, **render_kwargs_test)
 
                 loss_fit = img2mse(rgb, target_s_test)
                 psnr = mse2psnr(loss_fit)
-                logger.add_scalar('eval/fine_psnr_eps0', psnr, global_step=i)
+                #logger.add_scalar('eval/fine_psnr_eps0', psnr, global_step=i)
 
                 if 'rgb0' in extras:
                     img_loss0 = img2mse(extras['rgb0'], target_s_test)
                     psnr0 = mse2psnr(img_loss0)
-                    logger.add_scalar('eval/coarse_psnr_eps0', psnr0, global_step=i)
+                    #logger.add_scalar('eval/coarse_psnr_eps0', psnr0, global_step=i)
 
                     avg_psnr = (psnr + psnr0) / 2
-                    logger.add_scalar('eval/avg_psnr_eps0', avg_psnr, global_step=i)
+                    #logger.add_scalar('eval/avg_psnr_eps0', avg_psnr, global_step=i)
 
         # Rest is logging
         if i % args.i_weights == 0:
@@ -1388,13 +1388,13 @@ def ddp_train_nerf(gpu, args):
                            **render_kwargs_test)
 
                 rgb = rgb.view(hh, ww, 3)
-                logger.add_image('image', rgb, dataformats='HWC', global_step=i)
+                #logger.add_image('image', rgb, dataformats='HWC', global_step=i)
 
                 rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose, H_train=HH,
                                             **render_kwargs_test)
                 rgb = rgb.view(hh, ww, 3)
 
-                logger.add_image('image_eps0', rgb, dataformats='HWC', global_step=i)
+                #logger.add_image('image_eps0', rgb, dataformats='HWC', global_step=i)
 
         if i % args.i_print == 0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {logpsnr}")
