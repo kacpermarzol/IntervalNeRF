@@ -508,12 +508,8 @@ def render_rays(ray_batch,
     bounds = torch.reshape(ray_batch[..., 6:8], [-1, 1, 2])
     near, far = bounds[..., 0], bounds[..., 1]  # [-1,1]
 
-    t_vals = torch.linspace(0., 1., steps=N_samples)
+    t_vals = torch.linspace(0., 1., steps=N_samples).to(near.device)
     if not lindisp:
-        print('!!!')
-        print(near.device)
-        print(t_vals.device)
-        print(far.device)
         z_vals = near * (1. - t_vals) + far * (t_vals)
     else:
         z_vals = 1. / (1. / near * (1. - t_vals) + 1. / far * (t_vals))
