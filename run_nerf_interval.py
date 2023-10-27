@@ -217,6 +217,8 @@ def setup(rank, world_size):
     # initialize the process group
     torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
 
+def cleanup():
+    torch.distributed.destroy_process_group()
 
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
@@ -758,13 +760,7 @@ def config_parser():
 
     return parser
 
-
-def train():
-    parser = config_parser()
-    args = parser.parse_args()
-    gpu_list = [int(gpu) for gpu in args.gpus.split(',')]
-    print(gpu_list)
-    logger = tb.SummaryWriter(log_dir=f"runs/{args.expname}")
+def ddp_train_nerf(rank, args):
     # Load data
     K = None
 
@@ -846,8 +842,7 @@ def train():
         print('Unknown dataset type', args.dataset_type, 'exiting')
         return
 
-
-    #for generating videos with different resoultions
+    # for generating videos with different resoultions
     H, W, focal = hwf
     H_test, W_test, focal_test = H[0], W[0], focal[0]
     hwf_800 = (H_test, W_test, focal_test)
@@ -908,7 +903,6 @@ def train():
     # Move testing data to GPU
     # render_poses = torch.Tensor(render_poses).to(device)
 
-
     # Short circuit if only rendering out from trained model
     if args.render_only:
         print('RENDER ONLY')
@@ -958,8 +952,6 @@ def train():
         H_test = np.concatenate(
             [np.array(np.full((H[i] * W[i], 1), H[i])) for i in i_test]).flatten().reshape(-1, 1)
 
-
-
         print('done, concats')
 
         rays_rgb = []
@@ -993,7 +985,6 @@ def train():
         # rays_rgb_test = np.array(rays_rgb_test, dtype=np.float32)
         print('shuffle rays')
 
-
         rand_idx = np.random.permutation(rays_rgb.shape[0])
 
         rays_rgb = rays_rgb[rand_idx]
@@ -1020,7 +1011,6 @@ def train():
         rays_rgb = torch.from_numpy(rays_rgb)
         lossmult2 = torch.from_numpy(lossmult2)
 
-
     # Short circuit if only calculating metrics
     if args.metrics_only:
         psnr800 = []
@@ -1043,12 +1033,10 @@ def train():
                 pose = poses[i, :3, :4]
 
                 rgb, _, _, _, _, _ = render(hh, ww, kk, eps=args.eps, H_train=hh, chunk=args.chunk, c2w=pose,
-                                                **render_kwargs_test)
+                                            **render_kwargs_test)
                 rgb = rgb.view(hh, ww, 3).cpu()
 
                 psnr = mse2psnr(img2mse(rgb, images[i]))
-
-
 
                 # rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, H_train=hh, chunk=args.chunk, c2w=pose,
                 #                                 **render_kwargs_test)
@@ -1056,22 +1044,20 @@ def train():
                 #
                 # psnr0 = mse2psnr(img2mse(rgb, images[i]))
 
-
-                if lossmult[i]==1:
+                if lossmult[i] == 1:
                     psnr800.append(psnr)
                     # psnr800eps0.append(psnr0)
-                elif lossmult[i]==4:
+                elif lossmult[i] == 4:
                     psnr400.append(psnr)
                     # psnr400eps0.append(psnr0)
-                elif lossmult[i]==16:
+                elif lossmult[i] == 16:
                     psnr200.append(psnr)
                     # psnr200eps0.append(psnr0)
-                elif lossmult[i]==64:
+                elif lossmult[i] == 64:
                     psnr100.append(psnr)
                     # psnr100eps0.append(psnr0)
                 else:
                     print("something went wrong")
-
 
             print("_-_-_-_-_-_-_-_")
             print("PSNR")
@@ -1092,12 +1078,16 @@ def train():
 
             return
 
-
     N_iters = 1000001 + 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
     print('VAL views are', i_val)
+
+    # make sure different processes sample different rays
+    np.random.seed((rank + 1) * 777)
+    # make sure different processes have different perturbations in depth samples
+    torch.manual_seed((rank + 1) * 777)
 
     epsilon = args.eps
     start = start + 1
@@ -1108,7 +1098,7 @@ def train():
         # Sample random ray batch
         if use_batching:
             # Random over all images
-            batch = rays_rgb[i_batch:i_batch + N_rand] # [B, 2+1, 3*?]
+            batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
             mask = lossmult2[i_batch:i_batch + N_rand]
             HH = H_train[i_batch: i_batch + N_rand].to(device)
             # for making the loss like in MipNeRF:
@@ -1175,9 +1165,8 @@ def train():
         # else:
         #     kappa = 0.5
 
-
         rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays,
-                                                                     verbose=i < 10, retraw=True, H_train = HH,
+                                                                     verbose=i < 10, retraw=True, H_train=HH,
                                                                      **render_kwargs_train)
 
         # rgb = rgb.to('cpu')
@@ -1218,10 +1207,7 @@ def train():
             loss_fit = loss_fit + img_loss0
             loss_spec = loss_spec + loss_spec0
 
-
         loss = kappa * loss_fit + (1 - kappa) * loss_spec
-
-
 
         logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
 
@@ -1235,13 +1221,11 @@ def train():
         # NOTE: IMPORTANT!
         ###   update learning rate   ###
 
-
         decay_rate = 0.1
         decay_steps = args.lrate_decay * 1000
         new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
         for param_group in optimizer.param_groups:
             param_group['lr'] = new_lrate
-
 
         # decay_rate = 0.1
         # decay_steps = args.lrate_decay * 1000
@@ -1259,17 +1243,16 @@ def train():
 
         if i % args.save_every == 0:
             batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand].to(device)  # [B, 2+1, 3*?]
-            HH = H_test[i_batch_test : i_batch_test + N_rand].to(device)
+            HH = H_test[i_batch_test: i_batch_test + N_rand].to(device)
             i_batch_test += N_rand
             batch_test = torch.transpose(batch_test, 0, 1)
             batch_rays_test, target_s_test = batch_test[:2], batch_test[2]
             with torch.no_grad():
                 rgb, _, _, _, _, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_test,
-                                                 verbose=i < 10, retraw=True, H_train = HH, **render_kwargs_test)
+                                                 verbose=i < 10, retraw=True, H_train=HH, **render_kwargs_test)
                 loss_fit = img2mse(rgb, target_s_test)
                 psnr = mse2psnr(loss_fit)
                 logger.add_scalar('eval/fine_psnr', psnr, global_step=i)
-
 
                 if 'rgb0' in extras:
                     img_loss0 = img2mse(extras['rgb0'], target_s_test)
@@ -1280,8 +1263,7 @@ def train():
                     logger.add_scalar('eval/avg_psnr', avg_psnr, global_step=i)
 
                 rgb, _, _, _, _, extras = render(1, 1, 1, 0, chunk=args.chunk, rays=batch_rays_test,
-                                                 verbose=i < 10, retraw=True, H_train = HH, **render_kwargs_test)
-
+                                                 verbose=i < 10, retraw=True, H_train=HH, **render_kwargs_test)
 
                 loss_fit = img2mse(rgb, target_s_test)
                 psnr = mse2psnr(loss_fit)
@@ -1347,17 +1329,17 @@ def train():
                            [0, ff, 0.5 * hh],
                            [0, 0, 1]])
 
-            HH = torch.ones(hh**2, 1) * hh
+            HH = torch.ones(hh ** 2, 1) * hh
             pose = poses[img_i, :3, :4]
             with torch.no_grad():
                 rgb, _, _, _, _, _ = \
-                    render(hh, ww, kk, eps=eps, chunk=args.chunk, c2w=pose, H_train = HH,
-                                            **render_kwargs_test)
+                    render(hh, ww, kk, eps=eps, chunk=args.chunk, c2w=pose, H_train=HH,
+                           **render_kwargs_test)
 
                 rgb = rgb.view(hh, ww, 3)
                 logger.add_image('image', rgb, dataformats='HWC', global_step=i)
 
-                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose, H_train = HH,
+                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose, H_train=HH,
                                             **render_kwargs_test)
                 rgb = rgb.view(hh, ww, 3)
 
@@ -1409,6 +1391,22 @@ def train():
 
         global_step += 1
     logger.close()
+
+
+def train():
+    parser = config_parser()
+    args = parser.parse_args()
+    gpu_list = [int(gpu) for gpu in args.gpus.split(',')]
+    logger = tb.SummaryWriter(log_dir=f"runs/{args.expname}")
+
+    if args.world_size == -1:
+        args.world_size = torch.cuda.device_count()
+        logger.info('Using # gpus: {}'.format(args.world_size))
+    torch.multiprocessing.spawn(ddp_train_nerf,
+                                args=(args,),
+                                nprocs=args.world_size,
+                                join=True)
+
 
 
 if __name__ == '__main__':
