@@ -1163,6 +1163,7 @@ def ddp_train_nerf(gpu, args):
             batch_rays_ddp = batch_rays[:, partitions[rank]: partitions[rank + 1]]
             HH_ddp = HH[partitions[rank]: partitions[rank + 1]]
             mask_ddp = mask[partitions[rank]: partitions[rank + 1]]
+            target_s_ddp = target_s[partitions[rank]: partitions[rank + 1]]
 
         else:
             print("not implemented")
@@ -1220,16 +1221,16 @@ def ddp_train_nerf(gpu, args):
         # rgb_map_left, rgb_map_right = rgb_map_left.to('cpu'), rgb_map_right.to('cpu')
 
         if i % 1000 == 0:
-            print("target : ", target_s[0:3])
+            print("target : ", target_s_ddp[0:3])
             print("rgb : ", rgb[0:3])
             print("rgb_left : ", rgb_map_left[0:3])
             print("rgb_right : ", rgb_map_right[0:3], '\n')
 
         optimizer.zero_grad()
         # loss_fit = img2mse(rgb, target_s)
-        loss_fit = img2mse2(rgb, target_s, mask_ddp)
+        loss_fit = img2mse2(rgb, target_s_ddp, mask_ddp)
         # loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
-        loss_spec = interval_loss2(target_s, rgb_map_left, rgb_map_right, mask_ddp)
+        loss_spec = interval_loss2(target_s_ddp, rgb_map_left, rgb_map_right, mask_ddp)
 
         logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
         logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
