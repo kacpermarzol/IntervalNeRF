@@ -689,9 +689,6 @@ def train():
     torch.manual_seed((rank + 1) * 777)
 
     ##### only main process should do the logging
-    if rank == 0:
-        logger = SummaryWriter(os.path.join(args.basedir, 'summaries', args.expname))
-
 
     global_step = start
 

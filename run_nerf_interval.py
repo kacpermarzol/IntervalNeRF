@@ -914,18 +914,20 @@ def ddp_train_nerf(gpu, args):
     #     render_poses = np.array(poses[i_test])
 
     # Create log dir and copy the config file
-    basedir = args.basedir
-    expname = args.expname
-    os.makedirs(os.path.join(basedir, expname), exist_ok=True)
-    f = os.path.join(basedir, expname, 'args.txt')
-    with open(f, 'w') as file:
-        for arg in sorted(vars(args)):
-            attr = getattr(args, arg)
-            file.write('{} = {}\n'.format(arg, attr))
-    if args.config is not None:
-        f = os.path.join(basedir, expname, 'config.txt')
+    if rank == 0:
+        logger = tb.SummaryWriter(os.path.join(args.basedir, 'summaries', args.expname))
+        basedir = args.basedir
+        expname = args.expname
+        os.makedirs(os.path.join(basedir, expname), exist_ok=True)
+        f = os.path.join(basedir, expname, 'args.txt')
         with open(f, 'w') as file:
-            file.write(open(args.config, 'r').read())
+            for arg in sorted(vars(args)):
+                attr = getattr(args, arg)
+                file.write('{} = {}\n'.format(arg, attr))
+        if args.config is not None:
+            f = os.path.join(basedir, expname, 'config.txt')
+            with open(f, 'w') as file:
+                file.write(open(args.config, 'r').read())
 
     # Create nerf model
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args, gpu)
@@ -1232,12 +1234,12 @@ def ddp_train_nerf(gpu, args):
         # loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
         loss_spec = interval_loss2(target_s_ddp, rgb_map_left, rgb_map_right, mask_ddp)
 
-        #logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
-        #logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
+        logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
+        logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
 
         psnr = mse2psnr(loss_fit)
 
-        #logger.add_scalar('train/fine_psnr', psnr, global_step=i)
+        logger.add_scalar('train/fine_psnr', psnr, global_step=i)
 
         if 'rgb0' in extras:
             # img_loss0 = img2mse(extras['rgb0'], target_s)
@@ -1245,8 +1247,8 @@ def ddp_train_nerf(gpu, args):
             # loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
             loss_spec0 = interval_loss2(target_s_ddp, extras['rgb_map_left0'], extras['rgb_map_right0'], mask_ddp)
 
-            #logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
-            #logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
+            logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
+            logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
 
             psnr0 = mse2psnr(img_loss0)
 
@@ -1257,11 +1259,11 @@ def ddp_train_nerf(gpu, args):
 
         loss = kappa * loss_fit + (1 - kappa) * loss_spec
 
-        #logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
+        logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
 
-        #logpsnr = (psnr.item() + psnr0.item()) / 2
-        #logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
-        #logger.add_scalar('train/lr', new_lrate, global_step=i)
+        logpsnr = (psnr.item() + psnr0.item()) / 2
+        logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
+        logger.add_scalar('train/lr', new_lrate, global_step=i)
 
         loss.backward()
         optimizer.step()
@@ -1303,33 +1305,33 @@ def ddp_train_nerf(gpu, args):
                                                  verbose=i < 10, retraw=True, H_train=HH, **render_kwargs_test)
                 loss_fit = img2mse(rgb, target_s_test)
                 psnr = mse2psnr(loss_fit)
-                #logger.add_scalar('eval/fine_psnr', psnr, global_step=i)
+                logger.add_scalar('eval/fine_psnr', psnr, global_step=i)
 
                 if 'rgb0' in extras:
                     img_loss0 = img2mse(extras['rgb0'], target_s_test)
                     psnr0 = mse2psnr(img_loss0)
-                    #logger.add_scalar('eval/coarse_psnr', psnr0, global_step=i)
+                    logger.add_scalar('eval/coarse_psnr', psnr0, global_step=i)
 
                     avg_psnr = (psnr + psnr0) / 2
-                    #logger.add_scalar('eval/avg_psnr', avg_psnr, global_step=i)
+                    logger.add_scalar('eval/avg_psnr', avg_psnr, global_step=i)
 
                 rgb, _, _, _, _, extras = render(1, 1, 1, 0, chunk=args.chunk, rays=batch_rays_test,
                                                  verbose=i < 10, retraw=True, H_train=HH, **render_kwargs_test)
 
                 loss_fit = img2mse(rgb, target_s_test)
                 psnr = mse2psnr(loss_fit)
-                #logger.add_scalar('eval/fine_psnr_eps0', psnr, global_step=i)
+                logger.add_scalar('eval/fine_psnr_eps0', psnr, global_step=i)
 
                 if 'rgb0' in extras:
                     img_loss0 = img2mse(extras['rgb0'], target_s_test)
                     psnr0 = mse2psnr(img_loss0)
-                    #logger.add_scalar('eval/coarse_psnr_eps0', psnr0, global_step=i)
+                    logger.add_scalar('eval/coarse_psnr_eps0', psnr0, global_step=i)
 
                     avg_psnr = (psnr + psnr0) / 2
-                    #logger.add_scalar('eval/avg_psnr_eps0', avg_psnr, global_step=i)
+                    logger.add_scalar('eval/avg_psnr_eps0', avg_psnr, global_step=i)
 
         # Rest is logging
-        if i % args.i_weights == 0:
+        if i % args.i_weights == 0 and rank == 0:
             path = os.path.join(basedir, expname, '{:06d}.tar'.format(i))
             torch.save({
                 'global_step': global_step,
@@ -1339,7 +1341,7 @@ def ddp_train_nerf(gpu, args):
             }, path)
             print('Saved checkpoints at', path)
 
-        if i % args.i_video == 0 and i > 0:
+        if i % args.i_video == 0 and i > 0 and rank == 0:
             # Turn on testing mode
             with torch.no_grad():
                 rgbs800, disps800 = render_path(render_poses, hwf_800, K_800, args.chunk, render_kwargs_test, epsilon)
@@ -1373,7 +1375,7 @@ def ddp_train_nerf(gpu, args):
         #                     gt_imgs=images[i_test], savedir=testsavedir)
         #     print('Saved test set')
 
-        if i % args.i_img == 0:
+        if i % args.i_img == 0 and rank == 0:
             img_i = i_val[45]
             hh, ww, ff = H[img_i], W[img_i], focal[img_i]
             kk = np.array([[ff, 0, 0.5 * ww],
@@ -1388,15 +1390,15 @@ def ddp_train_nerf(gpu, args):
                            **render_kwargs_test)
 
                 rgb = rgb.view(hh, ww, 3)
-                #logger.add_image('image', rgb, dataformats='HWC', global_step=i)
+                logger.add_image('image', rgb, dataformats='HWC', global_step=i)
 
                 rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose, H_train=HH,
                                             **render_kwargs_test)
                 rgb = rgb.view(hh, ww, 3)
 
-                #logger.add_image('image_eps0', rgb, dataformats='HWC', global_step=i)
+                #ogger.add_image('image_eps0', rgb, dataformats='HWC', global_step=i)
 
-        if i % args.i_print == 0:
+        if i % args.i_print == 0 and rank == 0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {logpsnr}")
         """
             print(expname, i, psnr.numpy(), loss.numpy(), global_step.numpy())
