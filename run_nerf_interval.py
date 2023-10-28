@@ -1138,8 +1138,6 @@ def ddp_train_nerf(gpu, args):
         if use_batching:
             # Random over all images
             # use to partition data
-            print('!!!')
-            print(rays_rgb.shape)
 
             batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
             mask = lossmult2[i_batch:i_batch + N_rand]
@@ -1162,8 +1160,6 @@ def ddp_train_nerf(gpu, args):
 
             partitions = list(range(0, batch_rays.shape[1], int(batch_rays.shape[1] / (args.world_size))))
             partitions.append(batch_rays.shape[1])
-
-            print('!!! ', gpu, ' ', i_batch, '   ', partitions[rank], partitions[rank + 1])
 
             batch_rays_ddp = batch_rays[:, partitions[rank]: partitions[rank + 1]]
             HH_ddp = HH[partitions[rank]: partitions[rank + 1]]
