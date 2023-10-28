@@ -1040,15 +1040,15 @@ def ddp_train_nerf(gpu, args):
 
     # Move training data to GPU
     # if use_batching:
-    poses = torch.from_numpy(poses)
+    poses = torch.from_numpy(poses).to(gpu)
     # images = torch.Tensor(images).to(device)
 
     if use_batching:
-        H_test = torch.from_numpy(H_test)
-        H_train = torch.from_numpy(H_train)
-        rays_rgb_test = torch.from_numpy(rays_rgb_test)
-        rays_rgb = torch.from_numpy(rays_rgb)
-        lossmult2 = torch.from_numpy(lossmult2)
+        H_test = torch.from_numpy(H_test).to(gpu)
+        H_train = torch.from_numpy(H_train).to(gpu)
+        rays_rgb_test = torch.from_numpy(rays_rgb_test).to(gpu)
+        rays_rgb = torch.from_numpy(rays_rgb).to(gpu)
+        lossmult2 = torch.from_numpy(lossmult2).to(gpu)
 
     # Short circuit if only calculating metrics
     if args.metrics_only:
@@ -1139,14 +1139,14 @@ def ddp_train_nerf(gpu, args):
             # Random over all images
             # use to partition data
 
-            batch = rays_rgb[i_batch:i_batch + N_rand].to(gpu)  # [B, 2+1, 3*?]
-            mask = lossmult2[i_batch:i_batch + N_rand].to(gpu)
-            HH = H_train[i_batch: i_batch + N_rand].to(gpu)
+            batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
+            mask = lossmult2[i_batch:i_batch + N_rand]
+            HH = H_train[i_batch: i_batch + N_rand]
             # for making the loss like in MipNeRF:
             # "loss of each pixel by the area
             # of that pixel’s footprint in the original image (the loss for pixels f12rom the 1/4 images is scaled by 16, etc)
             # so that the few low-resolution pixels have comparable influence to the many high-resolution pixels. "
-            batch = torch.transpose(batch, 0, 1).to(gpu)
+            batch = torch.transpose(batch, 0, 1)
             batch_rays, target_s = batch[:2], batch[2]
 
             i_batch += N_rand
