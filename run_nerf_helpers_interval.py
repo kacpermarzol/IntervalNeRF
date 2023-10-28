@@ -276,7 +276,8 @@ def sample_pdf(bins, weights, N_samples, det=False, pytest=False):
         u = u.expand(list(cdf.shape[:-1]) + [N_samples])
     else:
         u = torch.rand(list(cdf.shape[:-1]) + [N_samples])
-
+    print('___')
+    print(u.device)
     # Pytest, overwrite u with numpy's fixed random numbers
     if pytest:
         np.random.seed(0)
