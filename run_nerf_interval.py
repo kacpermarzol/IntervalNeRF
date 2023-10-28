@@ -779,12 +779,28 @@ def config_parser():
 
     return parser
 
-def ddp_train_nerf(gpu, logger, args):
+def ddp_train_nerf(gpu, args):
     ###### set up multi-processing
     gpu_list = [int(gpu) for gpu in args.gpus.split(',')]
     rank = sum(gpu_list[:args.id]) + gpu
     dist.init_process_group(backend='gloo', init_method='env://', world_size=args.world_size, rank=rank)
     ###### set up logger
+    if rank == 0:
+        logger = tb.SummaryWriter(os.path.join(args.basedir, 'summaries', args.expname))
+        basedir = args.basedir
+        expname = args.expname
+        os.makedirs(os.path.join(basedir, expname), exist_ok=True)
+        f = os.path.join(basedir, expname, 'args.txt')
+        with open(f, 'w') as file:
+            for arg in sorted(vars(args)):
+                attr = getattr(args, arg)
+                file.write('{} = {}\n'.format(arg, attr))
+        if args.config is not None:
+            f = os.path.join(basedir, expname, 'config.txt')
+            with open(f, 'w') as file:
+                file.write(open(args.config, 'r').read())
+    torch.distributed.barrier()
+
 
     ###### decide chunk size according to gpu memory
     #logger.info('gpu_mem: {}'.format(torch.cuda.get_device_properties(rank).total_memory))
@@ -1457,7 +1473,7 @@ def train():
 
     torch.multiprocessing.spawn(ddp_train_nerf,
                                 nprocs=gpu_list[args.id],
-                                args=(logger, args))
+                                args=(args, logger))
 
 
 if __name__ == '__main__':
