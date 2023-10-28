@@ -779,7 +779,7 @@ def config_parser():
 
     return parser
 
-def ddp_train_nerf(gpu, args):
+def ddp_train_nerf(gpu, logger, args):
     ###### set up multi-processing
     gpu_list = [int(gpu) for gpu in args.gpus.split(',')]
     rank = sum(gpu_list[:args.id]) + gpu
@@ -912,20 +912,6 @@ def ddp_train_nerf(gpu, args):
     #     render_poses = np.array(poses[i_test])
 
     # Create log dir and copy the config file
-    if rank == 0:
-        logger = tb.SummaryWriter(os.path.join(args.basedir, 'summaries', args.expname))
-        basedir = args.basedir
-        expname = args.expname
-        os.makedirs(os.path.join(basedir, expname), exist_ok=True)
-        f = os.path.join(basedir, expname, 'args.txt')
-        with open(f, 'w') as file:
-            for arg in sorted(vars(args)):
-                attr = getattr(args, arg)
-                file.write('{} = {}\n'.format(arg, attr))
-        if args.config is not None:
-            f = os.path.join(basedir, expname, 'config.txt')
-            with open(f, 'w') as file:
-                file.write(open(args.config, 'r').read())
 
     # Create nerf model
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args, gpu)
@@ -1454,9 +1440,24 @@ def train():
     os.environ["MASTER_ADDR"] = "192.168.227.236"
     os.environ["MASTER_PORT"] = "29610"
         #logger.log('Using # gpus: {}'.format(args.world_size))
+
+    logger = tb.SummaryWriter(os.path.join(args.basedir, 'summaries', args.expname))
+    basedir = args.basedir
+    expname = args.expname
+    os.makedirs(os.path.join(basedir, expname), exist_ok=True)
+    f = os.path.join(basedir, expname, 'args.txt')
+    with open(f, 'w') as file:
+        for arg in sorted(vars(args)):
+            attr = getattr(args, arg)
+            file.write('{} = {}\n'.format(arg, attr))
+    if args.config is not None:
+        f = os.path.join(basedir, expname, 'config.txt')
+        with open(f, 'w') as file:
+            file.write(open(args.config, 'r').read())
+
     torch.multiprocessing.spawn(ddp_train_nerf,
                                 nprocs=gpu_list[args.id],
-                                args=(args,))
+                                args=(logger, args))
 
 
 if __name__ == '__main__':
