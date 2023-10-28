@@ -11,6 +11,7 @@ to8b = lambda x: (255 * np.clip(x, 0, 1)).astype(np.uint8)
 assert_all_nonnegative = lambda tensor: (tensor >= 0).all()
 
 def img2mse2(rgb, target, mask):
+    rgb = rgb.to(mask.device)
     mse = (mask * ((rgb - target[..., :3]) ** 2)).sum() / mask.sum()
     return mse
 
