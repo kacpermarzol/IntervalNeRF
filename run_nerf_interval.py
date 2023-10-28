@@ -785,6 +785,8 @@ def ddp_train_nerf(gpu, args):
     rank = sum(gpu_list[:args.id]) + gpu
     dist.init_process_group(backend='gloo', init_method='env://', world_size=args.world_size, rank=rank)
     ###### set up logger
+    print('gpu ', gpu)
+    print('rank ', rank)
     if rank == 0:
         logger = tb.SummaryWriter(os.path.join(args.basedir, 'summaries', args.expname))
         basedir = args.basedir
