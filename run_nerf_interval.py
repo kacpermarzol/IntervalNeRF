@@ -1214,11 +1214,9 @@ def ddp_train_nerf(gpu, args):
         # else:
         #     kappa = 0.5
 
-        print(gpu, ' before render')
         rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_ddp,
                                                                      verbose=i < 10, retraw=True, H_train=HH_ddp,
                                                                      **render_kwargs_train)
-        print(gpu, ' after render')
         # rgb = rgb.to('cpu')
         # rgb_map_left, rgb_map_right = rgb_map_left.to('cpu'), rgb_map_right.to('cpu')
 
@@ -1228,7 +1226,6 @@ def ddp_train_nerf(gpu, args):
             print("rgb_left : ", rgb_map_left[0:3])
             print("rgb_right : ", rgb_map_right[0:3], '\n')
 
-        optimizer.zero_grad()
         # loss_fit = img2mse(rgb, target_s)
         loss_fit = img2mse2(rgb, target_s_ddp, mask_ddp)
         # loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
@@ -1269,6 +1266,7 @@ def ddp_train_nerf(gpu, args):
 
         dist.all_reduce(loss, op=dist.ReduceOp.SUM)
         loss /= args.world_size
+        optimizer.zero_grad()
 
         if logger is not None:
             logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
