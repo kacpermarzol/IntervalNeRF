@@ -607,9 +607,9 @@ def render_rays(ray_batch,
 
         raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
 
-        rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu.cpu(),
-                                                                     z_vals.cpu(),
-                                                                     rays_d.cpu(), raw_noise_std, white_bkgd,
+        rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu,
+                                                                     z_vals,
+                                                                     rays_d, raw_noise_std, white_bkgd,
                                                                      pytest=pytest)
 
         del weights
