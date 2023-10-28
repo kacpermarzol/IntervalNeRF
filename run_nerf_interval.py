@@ -614,10 +614,10 @@ def render_rays(ray_batch,
 
         del weights
 
-        rgb_map_left, rgb_map_right = raw2outputs_eps(raw_left.cpu(),
-                                                      raw_right.cpu(),
-                                                      z_vals.cpu(),
-                                                      rays_d.cpu(), raw_noise_std, white_bkgd,
+        rgb_map_left, rgb_map_right = raw2outputs_eps(raw_left,
+                                                      raw_right,
+                                                      z_vals,
+                                                      rays_d, raw_noise_std, white_bkgd,
                                                       pytest=pytest)
 
     rgb_map= rgb_map.to('cpu')
