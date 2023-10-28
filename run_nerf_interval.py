@@ -779,14 +779,13 @@ def config_parser():
 
     return parser
 
-logger = None
-
 def ddp_train_nerf(gpu, args):
     ###### set up multi-processing
     gpu_list = [int(gpu) for gpu in args.gpus.split(',')]
     rank = sum(gpu_list[:args.id]) + gpu
     dist.init_process_group(backend='gloo', init_method='env://', world_size=args.world_size, rank=rank)
     ###### set up logger
+    logger = None
     if rank == 0:
         logger = tb.SummaryWriter(os.path.join(args.basedir, 'summaries', args.expname))
         basedir = args.basedir
@@ -1234,13 +1233,13 @@ def ddp_train_nerf(gpu, args):
         # loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
         loss_spec = interval_loss2(target_s_ddp, rgb_map_left, rgb_map_right, mask_ddp)
 
-        if rank == 0:
+        if logger is not None:
             logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
             logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
 
         psnr = mse2psnr(loss_fit)
 
-        if rank == 0:
+        if logger is not None:
             logger.add_scalar('train/fine_psnr', psnr, global_step=i)
 
         if 'rgb0' in extras:
@@ -1249,13 +1248,13 @@ def ddp_train_nerf(gpu, args):
             # loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
             loss_spec0 = interval_loss2(target_s_ddp, extras['rgb_map_left0'], extras['rgb_map_right0'], mask_ddp)
 
-            if rank == 0:
+            if logger is not None:
                 logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
                 logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
 
             psnr0 = mse2psnr(img_loss0)
 
-            if rank == 0:
+            if logger is not None:
                 logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
 
             loss_fit = loss_fit + img_loss0
@@ -1264,7 +1263,7 @@ def ddp_train_nerf(gpu, args):
         loss = kappa * loss_fit + (1 - kappa) * loss_spec
         logpsnr = (psnr.item() + psnr0.item()) / 2
 
-        if rank == 0:
+        if logger is not None:
             logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
             logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
             logger.add_scalar('train/lr', new_lrate, global_step=i)
