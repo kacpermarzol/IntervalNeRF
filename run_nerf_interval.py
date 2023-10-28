@@ -1252,7 +1252,7 @@ def ddp_train_nerf(gpu, args):
 
             psnr0 = mse2psnr(img_loss0)
 
-            #logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
+            logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
 
             loss_fit = loss_fit + img_loss0
             loss_spec = loss_spec + loss_spec0
