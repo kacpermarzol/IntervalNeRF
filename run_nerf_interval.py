@@ -1234,12 +1234,14 @@ def ddp_train_nerf(gpu, args):
         # loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
         loss_spec = interval_loss2(target_s_ddp, rgb_map_left, rgb_map_right, mask_ddp)
 
-        logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
-        logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
+        if rank == 0:
+            logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
+            logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
 
         psnr = mse2psnr(loss_fit)
 
-        logger.add_scalar('train/fine_psnr', psnr, global_step=i)
+        if rank == 0:
+            logger.add_scalar('train/fine_psnr', psnr, global_step=i)
 
         if 'rgb0' in extras:
             # img_loss0 = img2mse(extras['rgb0'], target_s)
@@ -1247,23 +1249,25 @@ def ddp_train_nerf(gpu, args):
             # loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
             loss_spec0 = interval_loss2(target_s_ddp, extras['rgb_map_left0'], extras['rgb_map_right0'], mask_ddp)
 
-            logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
-            logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
+            if rank == 0:
+                logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
+                logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
 
             psnr0 = mse2psnr(img_loss0)
 
-            logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
+            if rank == 0:
+                logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
 
             loss_fit = loss_fit + img_loss0
             loss_spec = loss_spec + loss_spec0
 
         loss = kappa * loss_fit + (1 - kappa) * loss_spec
-
-        logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
-
         logpsnr = (psnr.item() + psnr0.item()) / 2
-        logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
-        logger.add_scalar('train/lr', new_lrate, global_step=i)
+
+        if rank == 0:
+            logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
+            logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
+            logger.add_scalar('train/lr', new_lrate, global_step=i)
 
         loss.backward()
         optimizer.step()
