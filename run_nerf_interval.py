@@ -79,7 +79,7 @@ def batchify_rays(rays_flat, eps, chunk=1024 * 32, **kwargs):
     """
     all_ret = {}
     for i in range(0, rays_flat.shape[0], chunk):
-        ret = render_rays(rays_flat[i:i + chunk].detach().cpu(), epsilon=eps, **kwargs)
+        ret = render_rays(rays_flat[i:i + chunk].cpu(), epsilon=eps, **kwargs)
         for k in ret:
             if k not in all_ret:
                 all_ret[k] = []
@@ -1148,6 +1148,8 @@ def ddp_train_nerf(gpu, args):
             # so that the few low-resolution pixels have comparable influence to the many high-resolution pixels. "
             batch = torch.transpose(batch, 0, 1)
             batch_rays, target_s = batch[:2].to(gpu), batch[2]
+
+            print('!!! ', gpu, ' ', i_batch)
 
             i_batch += N_rand
             if i_batch >= rays_rgb.shape[0]:
