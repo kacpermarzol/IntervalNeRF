@@ -1146,7 +1146,7 @@ def ddp_train_nerf(gpu, args):
             # "loss of each pixel by the area
             # of that pixel’s footprint in the original image (the loss for pixels f12rom the 1/4 images is scaled by 16, etc)
             # so that the few low-resolution pixels have comparable influence to the many high-resolution pixels. "
-            batch = torch.transpose(batch, 0, 1)
+            batch = torch.transpose(batch, 0, 1).to(gpu)
             batch_rays, target_s = batch[:2], batch[2]
 
             i_batch += N_rand
