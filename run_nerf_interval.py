@@ -785,6 +785,7 @@ def ddp_train_nerf(gpu, args):
     rank = sum(gpu_list[:args.id]) + gpu
     dist.init_process_group(backend='gloo', init_method='env://', world_size=args.world_size, rank=rank)
     ###### set up logger
+    logger = None
     if rank == 0:
         logger = tb.SummaryWriter(os.path.join(args.basedir, 'summaries', args.expname))
         basedir = args.basedir
@@ -803,7 +804,7 @@ def ddp_train_nerf(gpu, args):
     print(gpu, ' hit the barrier')
     torch.distributed.barrier()
     print(gpu, ' after the barrier')
-    print('gpu ', logger)
+    print('gpu ', gpu, logger)
 
     ###### decide chunk size according to gpu memory
     #logger.info('gpu_mem: {}'.format(torch.cuda.get_device_properties(rank).total_memory))
