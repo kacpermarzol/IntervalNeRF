@@ -1139,15 +1139,15 @@ def ddp_train_nerf(gpu, args):
             # Random over all images
             # use to partition data
 
-            batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
-            mask = lossmult2[i_batch:i_batch + N_rand]
+            batch = rays_rgb[i_batch:i_batch + N_rand].to(gpu)  # [B, 2+1, 3*?]
+            mask = lossmult2[i_batch:i_batch + N_rand].to(gpu)
             HH = H_train[i_batch: i_batch + N_rand].to(gpu)
             # for making the loss like in MipNeRF:
             # "loss of each pixel by the area
             # of that pixel’s footprint in the original image (the loss for pixels f12rom the 1/4 images is scaled by 16, etc)
             # so that the few low-resolution pixels have comparable influence to the many high-resolution pixels. "
-            batch = torch.transpose(batch, 0, 1)
-            batch_rays, target_s = batch[:2].to(gpu), batch[2]
+            batch = torch.transpose(batch, 0, 1).to(gpu)
+            batch_rays, target_s = batch[:2], batch[2]
 
             i_batch += N_rand
             if i_batch >= rays_rgb.shape[0]:
