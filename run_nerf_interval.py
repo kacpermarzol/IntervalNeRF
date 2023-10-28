@@ -1263,16 +1263,17 @@ def ddp_train_nerf(gpu, args):
         loss = kappa * loss_fit + (1 - kappa) * loss_spec
         logpsnr = (psnr.item() + psnr0.item()) / 2
 
-        if logger is not None:
-            logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
-            logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
-            logger.add_scalar('train/lr', new_lrate, global_step=i)
-
         loss.backward()
         optimizer.step()
 
         dist.all_reduce(loss, op=dist.ReduceOp.SUM)
         loss /= args.world_size
+
+        if logger is not None:
+            logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
+            logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
+            logger.add_scalar('train/lr', new_lrate, global_step=i)
+
 
         # NOTE: IMPORTANT!
         ###   update learning rate   ###
