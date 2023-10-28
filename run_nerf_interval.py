@@ -579,9 +579,6 @@ def render_rays(ray_batch,
         rgb_map_0, disp_map_0, acc_map_0, rgb_map_left_0, rgb_map_right_0 = rgb_map, disp_map, acc_map, rgb_map_left, rgb_map_right
 
         z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
-        print('---')
-        print(z_vals_mid.device)
-        print(weights[..., 1:-1].device)
         z_samples = sample_pdf(z_vals_mid, weights[..., 1:-1], N_importance, det=(perturb == 0.), pytest=pytest)
         z_samples = z_samples.detach()
 
