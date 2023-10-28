@@ -1465,8 +1465,9 @@ def train():
         #logger.log('Using # gpus: {}'.format(args.world_size))
 
     torch.multiprocessing.spawn(ddp_train_nerf,
-                                nprocs=args.world_size,
-                                args=(args,))
+                                args=(args,),
+                                nprocs=gpu_list[args.id],
+                                )
 
 
 if __name__ == '__main__':
