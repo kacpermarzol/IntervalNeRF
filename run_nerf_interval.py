@@ -799,7 +799,7 @@ def ddp_train_nerf(gpu, args):
             f = os.path.join(basedir, expname, 'config.txt')
             with open(f, 'w') as file:
                 file.write(open(args.config, 'r').read())
-        torch.distributed.barrier()
+    torch.distributed.barrier()
 
 
     ###### decide chunk size according to gpu memory
