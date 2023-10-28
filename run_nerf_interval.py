@@ -803,6 +803,7 @@ def ddp_train_nerf(gpu, args):
     print(gpu, ' hit the barrier')
     torch.distributed.barrier()
     print(gpu, ' after the barrier')
+    print('gpu ', logger)
 
     ###### decide chunk size according to gpu memory
     #logger.info('gpu_mem: {}'.format(torch.cuda.get_device_properties(rank).total_memory))
