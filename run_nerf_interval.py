@@ -1459,7 +1459,7 @@ def train():
 
     torch.multiprocessing.spawn(ddp_train_nerf,
                                 nprocs=gpu_list[args.id],
-                                args=(args))
+                                args=(args,))
 
 
 if __name__ == '__main__':
