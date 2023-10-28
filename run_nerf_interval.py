@@ -1271,9 +1271,6 @@ def ddp_train_nerf(gpu, args):
         loss.backward()
         optimizer.step()
 
-
-        print('!!!!')
-        print(gpu, loss.detach().cpu().numpy())
         dist.all_reduce(loss, op=dist.ReduceOp.SUM)
         loss /= args.world_size
 
