@@ -1456,6 +1456,8 @@ def train():
     args = parser.parse_args()
     gpu_list = [int(gpu) for gpu in args.gpus.split(',')]
     args.world_size = sum(gpu_list)
+    print('world size')
+    print(args.world_size)
     print("This code is running. Check your master IP address if you see nothing after a while.")
     # This is the master node's IP
     os.environ["MASTER_ADDR"] = "192.168.227.236"
@@ -1463,7 +1465,7 @@ def train():
         #logger.log('Using # gpus: {}'.format(args.world_size))
 
     torch.multiprocessing.spawn(ddp_train_nerf,
-                                nprocs=gpu_list[args.id],
+                                nprocs=args.world_size,
                                 args=(args,))
 
 
