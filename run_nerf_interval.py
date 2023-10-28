@@ -217,7 +217,7 @@ def setup(rank, world_size):
     # os.environ['MASTER_PORT'] = '{}'.format(port)
     os.environ['MASTER_PORT'] = '12355'
     # initialize the process group
-    torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
+    torch.distributed.init_process_group("nccl", rank=rank, world_size=world_size)
 
 def cleanup():
     torch.distributed.destroy_process_group()
