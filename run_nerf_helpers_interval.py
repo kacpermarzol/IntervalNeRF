@@ -22,6 +22,9 @@ def interval_loss(y, left, right):
     return loss
 
 def interval_loss2(y, left, right, mask):
+    y = y.to(mask.device)
+    left = left.to(mask.device)
+    right = right.to(mask.device)
     loss = torch.max((y - left)**2, (y - right)**2)
     loss = loss * mask
     loss = torch.sum(loss) / mask.sum()
