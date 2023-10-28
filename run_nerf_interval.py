@@ -1214,10 +1214,11 @@ def ddp_train_nerf(gpu, args):
         # else:
         #     kappa = 0.5
 
+        print(gpu, ' before render')
         rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_ddp,
                                                                      verbose=i < 10, retraw=True, H_train=HH_ddp,
                                                                      **render_kwargs_train)
-
+        print(gpu, ' after render')
         # rgb = rgb.to('cpu')
         # rgb_map_left, rgb_map_right = rgb_map_left.to('cpu'), rgb_map_right.to('cpu')
 
