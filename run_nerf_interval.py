@@ -575,8 +575,6 @@ def render_rays(ray_batch,
     rgb_map_left = rgb_map_left.to('cpu')
     rgb_map_right = rgb_map_right.to('cpu')
 
-
-    print("eg")
     if N_importance > 0:
         rgb_map_0, disp_map_0, acc_map_0, rgb_map_left_0, rgb_map_right_0 = rgb_map, disp_map, acc_map, rgb_map_left, rgb_map_right
 
