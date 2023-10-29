@@ -217,7 +217,7 @@ def setup(rank, world_size):
     # os.environ['MASTER_PORT'] = '{}'.format(port)
     os.environ['MASTER_PORT'] = '12355'
     # initialize the process group
-    torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
+    torch.distributed.init_process_group("nccl", rank=rank, world_size=world_size)
 
 def cleanup():
     torch.distributed.destroy_process_group()
@@ -763,7 +763,7 @@ def config_parser():
                         help='frequency of console printout and metric loggin')
     parser.add_argument("--i_img", type=int, default=10000,
                         help='frequency of tensorboard image logging')
-    parser.add_argument("--i_weights", type=int, default=25000,
+    parser.add_argument("--i_weights", type=int, default=1000,
                         help='frequency of weight ckpt saving')
     parser.add_argument("--i_testset", type=int, default=50000,
                         help='frequency of testset saving')
@@ -1042,15 +1042,15 @@ def ddp_train_nerf(gpu, args):
 
     # Move training data to GPU
     # if use_batching:
-    poses = torch.from_numpy(poses).to(gpu)
+    poses = torch.from_numpy(poses)
     # images = torch.Tensor(images).to(device)
 
     if use_batching:
-        H_test = torch.from_numpy(H_test).to(gpu)
-        H_train = torch.from_numpy(H_train).to(gpu)
-        rays_rgb_test = torch.from_numpy(rays_rgb_test).to(gpu)
-        rays_rgb = torch.from_numpy(rays_rgb).to(gpu)
-        lossmult2 = torch.from_numpy(lossmult2).to(gpu)
+        H_test = torch.from_numpy(H_test)
+        H_train = torch.from_numpy(H_train)
+        rays_rgb_test = torch.from_numpy(rays_rgb_test)
+        rays_rgb = torch.from_numpy(rays_rgb)
+        lossmult2 = torch.from_numpy(lossmult2)
 
     # Short circuit if only calculating metrics
     if args.metrics_only:
@@ -1064,18 +1064,31 @@ def ddp_train_nerf(gpu, args):
         psnr100eps0 = []
 
         print('METRICS ONLY')
+
+
+
+        with torch.no_grad():
+            rgb, _, _, _, _, _ = \
+                render(hh, ww, kk, eps=eps, chunk=args.chunk, rays=rays, H_train=HH,
+                       **render_kwargs_test)
+
         with torch.no_grad():
             tensor10 = torch.log(torch.Tensor([10.])).to(gpu)
             for i in i_test[0:200]:
                 print(i)
                 hh, ww, ff = H[i], W[i], focal[i]
+                HH = (torch.ones(hh ** 2, 1) * hh).to(gpu)
+
                 kk = np.array([[ff, 0, 0.5 * ww],
                                [0, ff, 0.5 * hh],
                                [0, 0, 1]])
+                # pose = poses[i, :3, :4]
                 pose = poses[i, :3, :4]
+                rays_o, rays_d = get_rays(hh, ww, kk, pose)
+                rays_o, rays_d = rays_o.to(gpu), rays_d.to(gpu)
+                rays = (rays_o, rays_d)
 
-                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=args.eps, H_train=hh, chunk=args.chunk, c2w=pose,
-                                            **render_kwargs_test)
+                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=args.eps, rays=rays, H_train=HH, chunk=args.chunk, **render_kwargs_test)
                 rgb = rgb.view(hh, ww, 3).cpu()
 
                 loss = img2mse(rgb, images[i])
@@ -1144,14 +1157,14 @@ def ddp_train_nerf(gpu, args):
             # Random over all images
             # use to partition data
 
-            batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
-            mask = lossmult2[i_batch:i_batch + N_rand]
-            HH = H_train[i_batch: i_batch + N_rand]
+            batch = rays_rgb[i_batch:i_batch + N_rand].to(gpu)  # [B, 2+1, 3*?]
+            mask = lossmult2[i_batch:i_batch + N_rand].to(gpu)
+            HH = H_train[i_batch: i_batch + N_rand].to(gpu)
             # for making the loss like in MipNeRF:
             # "loss of each pixel by the area
             # of that pixel’s footprint in the original image (the loss for pixels f12rom the 1/4 images is scaled by 16, etc)
             # so that the few low-resolution pixels have comparable influence to the many high-resolution pixels. "
-            batch = torch.transpose(batch, 0, 1).to(gpu)
+            batch = torch.transpose(batch, 0, 1)
             batch_rays, target_s = batch[:2], batch[2]
 
             i_batch += N_rand
@@ -1400,21 +1413,26 @@ def ddp_train_nerf(gpu, args):
                            [0, ff, 0.5 * hh],
                            [0, 0, 1]])
 
-            HH = torch.ones(hh ** 2, 1) * hh
+
+            HH = (torch.ones(hh ** 2, 1) * hh).to(gpu)
             pose = poses[img_i, :3, :4]
+            rays_o, rays_d = get_rays(hh, ww, kk, pose)
+            rays_o, rays_d =rays_o.to(gpu), rays_d.to(gpu)
+            rays = (rays_o, rays_d)
+
             with torch.no_grad():
                 rgb, _, _, _, _, _ = \
-                    render(hh, ww, kk, eps=eps, chunk=args.chunk, c2w=pose, H_train=HH,
+                    render(hh, ww, kk, eps=eps, chunk=args.chunk, rays=rays, H_train=HH,
                            **render_kwargs_test)
 
                 rgb = rgb.view(hh, ww, 3)
                 logger.add_image('image', rgb, dataformats='HWC', global_step=i)
 
-                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose, H_train=HH,
-                                            **render_kwargs_test)
-                rgb = rgb.view(hh, ww, 3)
-
-                #ogger.add_image('image_eps0', rgb, dataformats='HWC', global_step=i)
+                # rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose, H_train=HH,
+                #                             **render_kwargs_test)
+                # rgb = rgb.view(hh, ww, 3)
+                #
+                # #logger.add_image('image_eps0', rgb, dataformats='HWC', global_step=i)
 
         if i % args.i_print == 0 and rank == 0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {logpsnr}")
