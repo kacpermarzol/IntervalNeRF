@@ -1065,6 +1065,7 @@ def ddp_train_nerf(gpu, args):
 
         print('METRICS ONLY')
         with torch.no_grad():
+            tensor10 = torch.log(torch.Tensor([10.])).to(gpu)
             for i in i_test[0:200]:
                 print(i)
                 hh, ww, ff = H[i], W[i], focal[i]
@@ -1077,12 +1078,14 @@ def ddp_train_nerf(gpu, args):
                                             **render_kwargs_test)
                 rgb = rgb.view(hh, ww, 3).cpu()
 
-                psnr = mse2psnr(img2mse(rgb, images[i]))
+                loss = img2mse(rgb, images[i])
+                psnr = -10. * torch.log(loss) / tensor10
+
+                # psnr = mse2psnr(img2mse(rgb, images[i]))
 
                 # rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, H_train=hh, chunk=args.chunk, c2w=pose,
                 #                                 **render_kwargs_test)
                 # rgb = rgb.view(hh, ww, 3).cpu()
-                #
                 # psnr0 = mse2psnr(img2mse(rgb, images[i]))
 
                 if lossmult[i] == 1:
@@ -1229,9 +1232,7 @@ def ddp_train_nerf(gpu, args):
             print("rgb_right : ", rgb_map_right[0:3], '\n')
 
         # loss_fit = img2mse(rgb, target_s)
-
         loss_fit = img2mse2(rgb, target_s_ddp, mask_ddp)
-        print("loss device", loss_fit.device)
         # loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
         loss_spec = interval_loss2(target_s_ddp, rgb_map_left, rgb_map_right, mask_ddp)
 
@@ -1315,12 +1316,15 @@ def ddp_train_nerf(gpu, args):
                 rgb, _, _, _, _, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_test,
                                                  verbose=i < 10, retraw=True, H_train=HH, **render_kwargs_test)
                 loss_fit = img2mse(rgb, target_s_test)
-                psnr = mse2psnr(loss_fit)
+                # psnr = mse2psnr(loss_fit)
+                psnr = -10. * torch.log(loss_fit) / tensor10
+
                 logger.add_scalar('eval/fine_psnr', psnr, global_step=i)
 
                 if 'rgb0' in extras:
                     img_loss0 = img2mse(extras['rgb0'], target_s_test)
-                    psnr0 = mse2psnr(img_loss0)
+                    # psnr0 = mse2psnr(img_loss0)
+                    psnr = -10. * torch.log(img_loss0) / tensor10
                     logger.add_scalar('eval/coarse_psnr', psnr0, global_step=i)
 
                     avg_psnr = (psnr + psnr0) / 2
@@ -1330,12 +1334,15 @@ def ddp_train_nerf(gpu, args):
                                                  verbose=i < 10, retraw=True, H_train=HH, **render_kwargs_test)
 
                 loss_fit = img2mse(rgb, target_s_test)
-                psnr = mse2psnr(loss_fit)
+                # psnr = mse2psnr(loss_fit)
+                psnr = -10. * torch.log(loss_fit) / tensor10
+
                 logger.add_scalar('eval/fine_psnr_eps0', psnr, global_step=i)
 
                 if 'rgb0' in extras:
                     img_loss0 = img2mse(extras['rgb0'], target_s_test)
-                    psnr0 = mse2psnr(img_loss0)
+                    # psnr0 = mse2psnr(img_loss0)
+                    psnr = -10. * torch.log(img_loss0) / tensor10
                     logger.add_scalar('eval/coarse_psnr_eps0', psnr0, global_step=i)
 
                     avg_psnr = (psnr + psnr0) / 2
