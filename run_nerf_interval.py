@@ -634,11 +634,11 @@ def config_parser():
     # training options
     parser.add_argument("--netdepth", type=int, default=8,
                         help='layers in network')
-    parser.add_argument("--netwidth", type=int, default=200,
+    parser.add_argument("--netwidth", type=int, default=256,
                         help='channels per layer')
     parser.add_argument("--netdepth_fine", type=int, default=8,
                         help='layers in fine network')
-    parser.add_argument("--netwidth_fine", type=int, default=200,
+    parser.add_argument("--netwidth_fine", type=int, default=256,
                         help='channels per layer in fine network')
     parser.add_argument("--N_rand", type=int, default=32 * 32 * 4,
                         help='batch size (number of random rays per gradient step)')
@@ -989,7 +989,6 @@ def train():
         i_batch = 0
         i_batch_test = 0
 
-        # Move training data to GPU
     # if use_batching:
     poses = torch.from_numpy(poses)
     # images = torch.Tensor(images).to(device)
@@ -1116,33 +1115,33 @@ def train():
         # kappa is a hyperparameter that governs the relative weight of satisfying the interval loss versus fit loss
         # with warmup
         #
-        if i < 200000:
-            eps = 0
-        elif i < 250000:
-            eps = ((i - 199999) / 50000) * epsilon
-        else:
-            eps = epsilon
-
-        if i < 200000:
-            kappa = 1
-        elif i < 300000:
-            kappa = max(1 - 0.000005 * (i - 199999), 0.5)
-        else:
-            kappa = 0.5
-
-        # if i < 100000:
+        # if i < 200000:
         #     eps = 0
-        # elif i < 150000:
-        #     eps = ((i - 99999) / 50000) * epsilon
+        # elif i < 250000:
+        #     eps = ((i - 199999) / 50000) * epsilon
         # else:
         #     eps = epsilon
         #
-        # if i < 100000:
+        # if i < 200000:
         #     kappa = 1
-        # elif i < 200000:
-        #     kappa = max(1 - 0.000005 * (i - 99999), 0.5)
+        # elif i < 300000:
+        #     kappa = max(1 - 0.000005 * (i - 199999), 0.5)
         # else:
         #     kappa = 0.5
+
+        if i < 100000:
+            eps = 0
+        elif i < 150000:
+            eps = ((i - 99999) / 50000) * epsilon
+        else:
+            eps = epsilon
+
+        if i < 100000:
+            kappa = 1
+        elif i < 200000:
+            kappa = max(1 - 0.000005 * (i - 99999), 0.5)
+        else:
+            kappa = 0.5
 
         # without warmup
         #
