@@ -571,11 +571,11 @@ def render_rays(ray_batch,
                                                   rays_d, raw_noise_std, white_bkgd,
                                                   pytest=pytest)
 
-    rgb_map = rgb_map.to('cpu')
-    disp_map = disp_map.to('cpu')
-    acc_map = acc_map.to('cpu')
-    rgb_map_left = rgb_map_left.to('cpu')
-    rgb_map_right = rgb_map_right.to('cpu')
+    # rgb_map = rgb_map.to('cpu')
+    # disp_map = disp_map.to('cpu')
+    # acc_map = acc_map.to('cpu')
+    # rgb_map_left = rgb_map_left.to('cpu')
+    # rgb_map_right = rgb_map_right.to('cpu')
 
     if N_importance > 0:
         rgb_map_0, disp_map_0, acc_map_0, rgb_map_left_0, rgb_map_right_0 = rgb_map, disp_map, acc_map, rgb_map_left, rgb_map_right
@@ -622,11 +622,11 @@ def render_rays(ray_batch,
                                                       rays_d, raw_noise_std, white_bkgd,
                                                       pytest=pytest)
 
-    rgb_map= rgb_map.to('cpu')
-    disp_map = disp_map.to('cpu')
-    acc_map = acc_map.to('cpu')
-    rgb_map_left= rgb_map_left.to('cpu')
-    rgb_map_right= rgb_map_right.to('cpu')
+    # rgb_map= rgb_map.to('cpu')
+    # disp_map = disp_map.to('cpu')
+    # acc_map = acc_map.to('cpu')
+    # rgb_map_left= rgb_map_left.to('cpu')
+    # rgb_map_right= rgb_map_right.to('cpu')
 
 
 
@@ -1229,7 +1229,9 @@ def ddp_train_nerf(gpu, args):
             print("rgb_right : ", rgb_map_right[0:3], '\n')
 
         # loss_fit = img2mse(rgb, target_s)
+
         loss_fit = img2mse2(rgb, target_s_ddp, mask_ddp)
+        print("loss device", loss_fit.device)
         # loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
         loss_spec = interval_loss2(target_s_ddp, rgb_map_left, rgb_map_right, mask_ddp)
 
@@ -1237,7 +1239,11 @@ def ddp_train_nerf(gpu, args):
             logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
             logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
 
-        psnr = mse2psnr(loss_fit)
+
+        # psnr = mse2psnr(loss_fit)
+
+        tensor10 = torch.log(torch.Tensor([10.])).to(gpu)
+        psnr = -10. * torch.log(loss_fit) / tensor10
 
         if logger is not None:
             logger.add_scalar('train/fine_psnr', psnr, global_step=i)
@@ -1252,7 +1258,7 @@ def ddp_train_nerf(gpu, args):
                 logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
                 logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
 
-            psnr0 = mse2psnr(img_loss0)
+            psnr0 = -10. * torch.log(img_loss0) / tensor10
 
             if logger is not None:
                 logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
@@ -1460,7 +1466,7 @@ def train():
     print(args.world_size)
     print("This code is running. Check your master IP address if you see nothing after a while.")
     # This is the master node's IP
-    os.environ["MASTER_ADDR"] = "192.168.227.236"
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = "29610"
         #logger.log('Using # gpus: {}'.format(args.world_size))
 
