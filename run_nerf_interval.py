@@ -222,7 +222,7 @@ def setup(rank, world_size):
 def cleanup():
     torch.distributed.destroy_process_group()
 
-def create_nerf(args, gpu):
+def create_nerf(args, gpu, rank):
     """Instantiate NeRF's MLP model.
     """
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
@@ -238,6 +238,7 @@ def create_nerf(args, gpu):
                  input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs)
     model = model.to(gpu)
     ddp_model = DDP(model, device_ids=[gpu])
+    model= ddp_model.module
     grad_vars = list(ddp_model.parameters())
 
     model_fine = None
@@ -247,6 +248,7 @@ def create_nerf(args, gpu):
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs)
         model_fine.to(gpu)
         ddp_fine_model = DDP(model_fine, device_ids=[gpu])
+        model_fine = ddp_fine_model.module
         grad_vars += list(ddp_fine_model.parameters())
 
     network_query_fn = lambda inputs, viewdirs, network_fn, eps: run_network(inputs, viewdirs, network_fn, eps,
@@ -270,11 +272,17 @@ def create_nerf(args, gpu):
         ckpts = [os.path.join(basedir, expname, f) for f in sorted(os.listdir(os.path.join(basedir, expname))) if
                  'tar' in f]
 
+        # dist.barrier()
+        # # configure map_location properly
+        # ddp_model.load_state_dict(
+        #     torch.load(CHECKPOINT_PATH, map_location=map_location))
+
     print('Found ckpts', ckpts)
     if len(ckpts) > 0 and not args.no_reload:
+        map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
         ckpt_path = ckpts[-1]
         print('Reloading from', ckpt_path)
-        ckpt = torch.load(ckpt_path)
+        ckpt = torch.load(ckpt_path, map_location=map_location)
 
         start = ckpt['global_step']
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
@@ -713,7 +721,7 @@ def config_parser():
     parser.add_argument("--render_factor", type=int, default=0,
                         help='downsampling factor to speed up rendering, set 4 or 8 for fast preview')
 
-    # training options
+    # training options f
     parser.add_argument("--precrop_iters", type=int, default=0,
                         help='number of steps to train on central crops')
     parser.add_argument("--precrop_frac", type=float,
@@ -931,7 +939,7 @@ def ddp_train_nerf(gpu, args):
     # Create log dir and copy the config file
 
     # Create nerf model
-    render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args, gpu)
+    render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args, gpu, rank)
     global_step = start
 
     bds_dict = {
@@ -1065,12 +1073,6 @@ def ddp_train_nerf(gpu, args):
 
         print('METRICS ONLY')
 
-
-
-        with torch.no_grad():
-            rgb, _, _, _, _, _ = \
-                render(hh, ww, kk, eps=eps, chunk=args.chunk, rays=rays, H_train=HH,
-                       **render_kwargs_test)
 
         with torch.no_grad():
             tensor10 = torch.log(torch.Tensor([10.])).to(gpu)
@@ -1364,10 +1366,12 @@ def ddp_train_nerf(gpu, args):
         # Rest is logging
         if i % args.i_weights == 0 and rank == 0:
             path = os.path.join(basedir, expname, '{:06d}.tar'.format(i))
+            network_fn_save = render_kwargs_train['network_fn'].module
+            network_fine_save = render_kwargs_train['network_fine'].module
             torch.save({
                 'global_step': global_step,
-                'network_fn_state_dict': render_kwargs_train['network_fn'].state_dict(),
-                'network_fine_state_dict': render_kwargs_train['network_fine'].state_dict(),
+                'network_fn_state_dict': network_fn_save.state_dict(),
+                'network_fine_state_dict': network_fine_save.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
             }, path)
             print('Saved checkpoints at', path)
