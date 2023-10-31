@@ -1274,10 +1274,10 @@ def ddp_train_nerf(gpu, args):
             # loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
             loss_spec0 = interval_loss2(target_s_ddp, extras['rgb_map_left0'], extras['rgb_map_right0'], mask_ddp)
             psnr0 = -10. * torch.log(img_loss0) / tensor10
-            loss_fit = loss_fit + img_loss0
-            loss_spec = loss_spec + loss_spec0
+            loss_fit_final = loss_fit + img_loss0
+            loss_spec_final = loss_spec + loss_spec0
 
-        loss = kappa * loss_fit + (1 - kappa) * loss_spec
+        loss = kappa * loss_fit_final + (1 - kappa) * loss_spec_final
         logpsnr = (psnr.item() + psnr0.item()) / 2
 
         loss.backward()
@@ -1350,7 +1350,7 @@ def ddp_train_nerf(gpu, args):
                     logger.add_scalar('eval/coarse_psnr', psnr0, global_step=i)
 
                     avg_psnr = (psnr + psnr0) / 2
-                    logger.add_scalar('eval/avg_psnr', avg_psnr, global_step=i)
+                    logger.add_scalar('eval/avg_psnr', avg_pxsnr, global_step=i)
 
                 rgb, _, _, _, _, extras = render(1, 1, 1, 0, chunk=args.chunk, rays=batch_rays_test,
                                                  verbose=i < 10, retraw=True, H_train=HH, **render_kwargs_test)
