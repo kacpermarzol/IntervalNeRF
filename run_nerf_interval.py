@@ -630,13 +630,6 @@ def render_rays(ray_batch,
                                                       rays_d, raw_noise_std, white_bkgd,
                                                       pytest=pytest)
 
-    # rgb_map= rgb_map.to('cpu')
-    # disp_map = disp_map.to('cpu')
-    # acc_map = acc_map.to('cpu')
-    # rgb_map_left= rgb_map_left.to('cpu')
-    # rgb_map_right= rgb_map_right.to('cpu')
-
-
 
     ret = {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map': acc_map, 'rgb_map_left': rgb_map_left,
            'rgb_map_right': rgb_map_right}
@@ -771,7 +764,7 @@ def config_parser():
                         help='frequency of console printout and metric loggin')
     parser.add_argument("--i_img", type=int, default=10000,
                         help='frequency of tensorboard image logging')
-    parser.add_argument("--i_weights", type=int, default=1000,
+    parser.add_argument("--i_weights", type=int, default=20000,
                         help='frequency of weight ckpt saving')
     parser.add_argument("--i_testset", type=int, default=50000,
                         help='frequency of testset saving')
@@ -784,8 +777,6 @@ def config_parser():
 
     parser.add_argument("--save_every", type=int, default=1000, help="The number of steps to run eval on testset")
     parser.add_argument("--metrics_only", type=bool, default=False)
-
-
 
     return parser
 
@@ -1076,8 +1067,9 @@ def ddp_train_nerf(gpu, args):
 
         with torch.no_grad():
             tensor10 = torch.log(torch.Tensor([10.])).to(gpu)
-            for i in i_test[0:200]:
-                print(i)
+
+            for it in trange(200):
+                i = i_test[it]
                 hh, ww, ff = H[i], W[i], focal[i]
                 HH = (torch.ones(hh ** 2, 1) * hh).to(gpu)
 
@@ -1194,19 +1186,19 @@ def ddp_train_nerf(gpu, args):
         # kappa is a hyperparameter that governs the relative weight of satisfying the interval loss versus fit loss
         # with warmup
         #
-        if i < 200000:
-            eps = 0
-        elif i < 250000:
-            eps = ((i - 199999) / 50000) * epsilon
-        else:
-            eps = epsilon
-
-        if i < 200000:
-            kappa = 1
-        elif i < 300000:
-            kappa = max(1 - 0.000005 * (i - 199999), 0.5)
-        else:
-            kappa = 0.5
+        # if i < 200000:
+        #     eps = 0
+        # elif i < 250000:
+        #     eps = ((i - 199999) / 50000) * epsilon
+        # else:
+        #     eps = epsilon
+        #
+        # if i < 200000:
+        #     kappa = 1
+        # elif i < 300000:
+        #     kappa = max(1 - 0.000005 * (i - 199999), 0.5)
+        # else:
+        #     kappa = 0.5
 
         # if i < 100000:
         #     eps = 0
@@ -1221,6 +1213,22 @@ def ddp_train_nerf(gpu, args):
         #     kappa = max(1 - 0.000005 * (i - 99999), 0.5)
         # else:
         #     kappa = 0.5
+
+
+        #batch4096
+        if i < 50000:
+            eps = 0
+        elif i < 150000:
+            eps = ((i - 49999) / 100000) * epsilon
+        else:
+            eps = epsilon
+
+        if i < 50000:
+            kappa = 1
+        elif i < 150000:
+            kappa = max(1 - 0.000005 * (i - 49999), 0.5)
+        else:
+            kappa = 0.5
 
         # without warmup
         #
