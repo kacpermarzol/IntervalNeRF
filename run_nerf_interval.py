@@ -771,12 +771,13 @@ def config_parser():
     parser.add_argument("--i_video", type=int, default=1000000,  ###!!!
                         help='frequency of render_poses video saving')
 
-    ### Added eps argument for IntervalNeRF
     parser.add_argument("--eps", type=float, default=0.0,
                         help=' todo ')
 
     parser.add_argument("--save_every", type=int, default=1000, help="The number of steps to run eval on testset")
     parser.add_argument("--metrics_only", type=bool, default=False)
+    parser.add_argument("--log_every", type=int, default=10, help="The number of steps to log into tensorboard")
+
 
     return parser
 
@@ -1216,17 +1217,17 @@ def ddp_train_nerf(gpu, args):
 
 
         #batch4096
-        if i < 50000:
+        if i < 60000:
             eps = 0
-        elif i < 150000:
-            eps = ((i - 49999) / 100000) * epsilon
+        elif i < 160000:
+            eps = ((i - 59999) / 100000) * epsilon
         else:
             eps = epsilon
 
-        if i < 50000:
+        if i < 60000:
             kappa = 1
-        elif i < 150000:
-            kappa = max(1 - 0.000005 * (i - 49999), 0.5)
+        elif i < 160000:
+            kappa = max(1 - 0.000005 * (i - 59999), 0.5)
         else:
             kappa = 0.5
 
@@ -1248,7 +1249,7 @@ def ddp_train_nerf(gpu, args):
         # rgb = rgb.to('cpu')
         # rgb_map_left, rgb_map_right = rgb_map_left.to('cpu'), rgb_map_right.to('cpu')
 
-        if i % 1000 == 0:
+        if i % 5000 == 0:
             print("target : ", target_s_ddp[0:3])
             print("rgb : ", rgb[0:3])
             print("rgb_left : ", rgb_map_left[0:3])
@@ -1259,34 +1260,20 @@ def ddp_train_nerf(gpu, args):
         # loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
         loss_spec = interval_loss2(target_s_ddp, rgb_map_left, rgb_map_right, mask_ddp)
 
-        if logger is not None:
-            logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
-            logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
-
-
         # psnr = mse2psnr(loss_fit)
 
         tensor10 = torch.log(torch.Tensor([10.])).to(gpu)
         psnr = -10. * torch.log(loss_fit) / tensor10
 
-        if logger is not None:
-            logger.add_scalar('train/fine_psnr', psnr, global_step=i)
+        # if logger is not None:
+        #     logger.add_scalar('train/fine_psnr', psnr, global_step=i)
 
         if 'rgb0' in extras:
             # img_loss0 = img2mse(extras['rgb0'], target_s)
             img_loss0 = img2mse2(extras['rgb0'], target_s_ddp, mask_ddp)
             # loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
             loss_spec0 = interval_loss2(target_s_ddp, extras['rgb_map_left0'], extras['rgb_map_right0'], mask_ddp)
-
-            if logger is not None:
-                logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
-                logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
-
             psnr0 = -10. * torch.log(img_loss0) / tensor10
-
-            if logger is not None:
-                logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
-
             loss_fit = loss_fit + img_loss0
             loss_spec = loss_spec + loss_spec0
 
@@ -1296,14 +1283,26 @@ def ddp_train_nerf(gpu, args):
         loss.backward()
         optimizer.step()
 
+        if logger is not None and i % args.log_every == 0:
+            logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
+            logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
+            logger.add_scalar('train/fine_psnr', psnr, global_step=i)
+            logger.add_scalar('losses/loss_fit0', img_loss0.item(), global_step=i)
+            logger.add_scalar('losses/loss_spec0', loss_spec0.item(), global_step=i)
+            logger.add_scalar('train/coarse_psnr', psnr0, global_step=i)
+            logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
+            logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
+            logger.add_scalar('train/lr', new_lrate, global_step=i)
+
+
         dist.all_reduce(loss, op=dist.ReduceOp.SUM)
         loss /= args.world_size
         optimizer.zero_grad()
 
-        if logger is not None:
-            logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
-            logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
-            logger.add_scalar('train/lr', new_lrate, global_step=i)
+        # if logger is not None:
+        #     logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
+        #     logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
+        #     logger.add_scalar('train/lr', new_lrate, global_step=i)
 
 
         # NOTE: IMPORTANT!
@@ -1347,7 +1346,7 @@ def ddp_train_nerf(gpu, args):
                 if 'rgb0' in extras:
                     img_loss0 = img2mse(extras['rgb0'], target_s_test)
                     # psnr0 = mse2psnr(img_loss0)
-                    psnr = -10. * torch.log(img_loss0) / tensor10
+                    psnr0 = -10. * torch.log(img_loss0) / tensor10
                     logger.add_scalar('eval/coarse_psnr', psnr0, global_step=i)
 
                     avg_psnr = (psnr + psnr0) / 2
