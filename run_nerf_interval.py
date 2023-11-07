@@ -257,7 +257,7 @@ def create_nerf(args, gpu, rank):
                                                                              netchunk=args.netchunk)  ##Aded epsilon
 
     # Create optimizer
-    optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
+    optimizer = torch.optim.Adam(params=grad_vars, lr=args.lr_init, betas=(0.9, 0.999))
 
     start = 0
     basedir = args.basedir
@@ -674,10 +674,10 @@ def config_parser():
                         help='channels per layer in fine network')
     parser.add_argument("--N_rand", type=int, default=32 * 32 * 4,
                         help='batch size (number of random rays per gradient step)')
-    parser.add_argument("--lrate", type=float, default=5e-4,
-                        help='learning rate')
-    parser.add_argument("--lrate_decay", type=int, default=500,  ## to make lrate go from 5e-4 to 5e-6 as in papers
-                        help='exponential learning rate decay (in 1000 steps)')
+    # parser.add_argument("--lrate", type=float, default=5e-4,
+    #                     help='learning rate')
+    # parser.add_argument("--lrate_decay", type=int, default=500,  ## to make lrate go from 5e-4 to 5e-6 as in papers
+    #                     help='exponential learning rate decay (in 1000 steps)')
     parser.add_argument("--chunk", type=int, default=1024 * 32,
                         help='number of rays processed in parallel, decrease if running out of memory')
     parser.add_argument("--netchunk", type=int, default=1024 * 64,
@@ -777,6 +777,13 @@ def config_parser():
     parser.add_argument("--save_every", type=int, default=1000, help="The number of steps to run eval on testset")
     parser.add_argument("--metrics_only", type=bool, default=False)
     parser.add_argument("--log_every", type=int, default=10, help="The number of steps to log into tensorboard")
+
+    parser.add_argument("--lr_init", type=float, default=5e-4)
+    parser.add_argument("--lr_final", type=float, default=5e-6)
+    parser.add_argument("--lr_delay_steps", type=int, default=2500)
+    parser.add_argument("--lr_delay_mult", type=float, default=0.1)
+    parser.add_argument("--weight_decay", type=float, default=1e-5)
+
 
 
     return parser
@@ -1143,7 +1150,7 @@ def ddp_train_nerf(gpu, args):
 
     epsilon = args.eps
     start = start + 1
-    new_lrate = args.lrate
+    new_lrate = args.lr_init
     for i in trange(start, N_iters):
         time0 = time.time()
 
@@ -1308,9 +1315,16 @@ def ddp_train_nerf(gpu, args):
         # NOTE: IMPORTANT!
         ###   update learning rate   ###
 
-        decay_rate = 0.1
-        decay_steps = args.lrate_decay * 1000
-        new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
+
+        step = i
+        if args.lr_delay_steps > 0:
+            delay_rate = args.lr_delay_mult + (1 - args.lr_delay_mult) * np.sin(
+                0.5 * np.pi * np.clip(step/ args.lr_delay_steps, 0, 1))
+        else:
+            delay_rate = 1.
+        t = np.clip(step / N_iters, 0, 1)
+        log_lerp = np.exp(np.log(args.lr_init) * (1 - t) + np.log(args.lr_final) * t)
+        new_lrate = delay_rate * log_lerp
         for param_group in optimizer.param_groups:
             param_group['lr'] = new_lrate
 
