@@ -1,4 +1,4 @@
-expname = testing
+expname = multicam4096_v2
 basedir = ./logs
 datadir = ./data/multiscale/lego
 dataset_type = multiscale
@@ -7,9 +7,10 @@ no_batching = False
 
 use_viewdirs = True
 white_bkgd = True
-lrate_decay = 500
+#lrate_decay = 500
 
 N_samples = 64
 N_importance = 128
-N_rand= 8200
+N_rand= 1
 
+eps = 0.01
