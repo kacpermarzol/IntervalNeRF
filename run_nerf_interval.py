@@ -1217,31 +1217,31 @@ def ddp_train_nerf(gpu, args):
 
 
         #batch4096
-        if i < 60000:
-            eps = 0
-        elif i < 160000:
-            eps = ((i - 59999) / 100000) * epsilon
-        else:
-            eps = epsilon
-
-        if i < 60000:
-            kappa = 1
-        elif i < 160000:
-            kappa = max(1 - 0.000005 * (i - 59999), 0.5)
-        else:
-            kappa = 0.5
-
-        # without warmup
-        #
-        # if i < 50000:
-        #     eps = (i / 50000) * epsilon
+        # if i < 60000:
+        #     eps = 0
+        # elif i < 160000:
+        #     eps = ((i - 59999) / 100000) * epsilon
         # else:
         #     eps = epsilon
         #
-        # if i < 100000:
-        #     kappa = max(1 - 0.000005 * i, 0.5)
+        # if i < 60000:
+        #     kappa = 1
+        # elif i < 160000:
+        #     kappa = max(1 - 0.000005 * (i - 59999), 0.5)
         # else:
         #     kappa = 0.5
+
+        # without warmup
+
+        if i < 50000:
+            eps = (i / 50000) * epsilon
+        else:
+            eps = epsilon
+
+        if i < 100000:
+            kappa = max(1 - 0.000005 * i, 0.5)
+        else:
+            kappa = 0.5
 
         rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_ddp,
                                                                      verbose=i < 10, retraw=True, H_train=HH_ddp,
