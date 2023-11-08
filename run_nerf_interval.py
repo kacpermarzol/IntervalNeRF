@@ -118,13 +118,25 @@ def render(H, W, K, eps, chunk=1024 * 32, rays=None, H_train=None, c2w=None, ndc
     if c2w is not None:
         # special case to render full image
         rays_o, rays_d = get_rays(H, W, K, c2w)
-        rays_o, rays_d = rays_o.to(device), rays_d.to(device)
     else:
         # use provided ray batch
         rays_o, rays_d = rays
 
     rays_o = torch.reshape(rays_o, [-1, 3]).float()
     rays_d = torch.reshape(rays_d, [-1, 3]).float()
+
+
+
+
+    dx = [
+        np.sqrt(np.sum((v[:-1, :, :] - v[1:, :, :]) ** 2, -1)) for v in rays_d
+    ]
+    dx = [np.concatenate([v, v[-2:-1, :]], 0) for v in dx]
+    # Cut the distance in half, and then round it out so that it's
+    # halfway between inscribed by / circumscribed about the pixel.
+    radii = [v[..., None] * 2 / np.sqrt(12) for v in dx]
+
+
 
     if use_viewdirs:
         # provide ray directions as input
@@ -137,12 +149,13 @@ def render(H, W, K, eps, chunk=1024 * 32, rays=None, H_train=None, c2w=None, ndc
         viewdirs = viewdirs / torch.norm(viewdirs, dim=-1, keepdim=True)
         viewdirs = torch.reshape(viewdirs, [-1, 3]).float()
 
-    if H_train is not None:
-        pixel = 1 / H_train
-        if np.shape(H_train) == ():
-            pixel = torch.ones_like(distances) * pixel
 
 
+    # if H_train is not None:
+    pixel = radii
+    # pixel = 1 / H_train
+    #     if np.shape(H_train) == ():
+    #         pixel = torch.ones_like(distances) * pixel
 
     sh = rays_d.shape  # [..., 3]
     if ndc:
@@ -1085,11 +1098,6 @@ def ddp_train_nerf(gpu, args):
                 kk = np.array([[ff, 0, 0.5 * ww],
                                [0, ff, 0.5 * hh],
                                [0, 0, 1]])
-                pose = poses[i, :3, :4].to(device)
-
-                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=args.eps, H_train=hh, chunk=args.chunk, c2w=pose,
-                                                **render_kwargs_test)
-                rgb = rgb.view(hh, ww, 3)
                 # pose = poses[i, :3, :4]
                 pose = poses[i, :3, :4]
                 rays_o, rays_d = get_rays(hh, ww, kk, pose)
@@ -1307,20 +1315,6 @@ def ddp_train_nerf(gpu, args):
             # img_loss0 = img2mse(extras['rgb0'], target_s)
             img_loss0 = img2mse2(extras['rgb0'], target_s_ddp, mask_ddp)
             # loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
-            loss_spec0 = interval_loss2(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'], mask)
-
-            psnr0 = mse2psnr(img_loss0)
-
-            loss_fit_final = loss_fit + img_loss0
-            loss_spec_final = loss_spec + loss_spec0
-
-
-        loss = kappa * loss_fit_final + (1 - kappa) * loss_spec_final
-
-
-        logpsnr = (psnr.item() + psnr0.item()) / 2
-
-
         loss_spec0 = interval_loss2(target_s_ddp, extras['rgb_map_left0'], extras['rgb_map_right0'], mask_ddp)
         psnr0 = -10. * torch.log(img_loss0) / tensor10
         loss_fit_final = loss_fit + img_loss0
@@ -1332,8 +1326,6 @@ def ddp_train_nerf(gpu, args):
         loss.backward()
         optimizer.step()
 
-
-        #loggers
         if logger is not None and i % args.log_every == 0:
             logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
             logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
@@ -1345,12 +1337,6 @@ def ddp_train_nerf(gpu, args):
             logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
             logger.add_scalar('train/lr', new_lrate, global_step=i)
 
-
-
-        # decay_rate = 0.1
-        # decay_steps = args.lrate_decay * 1000
-        # new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
-        #
 
         dist.all_reduce(loss, op=dist.ReduceOp.SUM)
         loss /= args.world_size
@@ -1392,15 +1378,12 @@ def ddp_train_nerf(gpu, args):
         # print(f"Step: {global_step}, Loss: {loss}, Time: {dt}")
         #####           end            #####
 
-        if i % args.save_every == 0:
-            batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand]  # [B, 2+1, 3*?]
-            HH = H_test[i_batch_test : i_batch_test + N_rand].to(device)
         if i % args.save_every == 0 and rank == 0:
             batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand].to(gpu)  # [B, 2+1, 3*?]
             HH = H_test[i_batch_test: i_batch_test + N_rand].to(gpu)
             i_batch_test += N_rand
             batch_test = torch.transpose(batch_test, 0, 1)
-            batch_rays_test, target_s_test = batch_test[:2].to(device), batch_test[2]
+            batch_rays_test, target_s_test = batch_test[:2], batch_test[2]
             with torch.no_grad():
                 rgb, _, _, _, _, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_test,
                                                  verbose=i < 10, retraw=True, H_train = HH, **render_kwargs_test)
@@ -1491,9 +1474,6 @@ def ddp_train_nerf(gpu, args):
             kk = np.array([[ff, 0, 0.5 * ww],
                            [0, ff, 0.5 * hh],
                            [0, 0, 1]])
-
-            HH = (torch.ones(hh**2, 1) * hh).to(device)
-            pose = poses[img_i, :3, :4].to(device)
 
             HH = (torch.ones(hh ** 2, 1) * hh).to(gpu)
             pose = poses[img_i, :3, :4]

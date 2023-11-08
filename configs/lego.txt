@@ -1,4 +1,4 @@
-expname = multicam4096_v2
+expname = multicamV20
 basedir = ./logs
 datadir = ./data/multiscale/lego
 dataset_type = multiscale
@@ -13,5 +13,5 @@ N_samples = 64
 N_importance = 128
 N_rand= 512
 
-eps = 0.01
-#
+eps = 1
+
