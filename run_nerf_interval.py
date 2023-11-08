@@ -1137,7 +1137,7 @@ def ddp_train_nerf(gpu, args):
 
             return
 
-    N_iters = 1000001 + 1
+    N_iters = 500001 + 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
@@ -1364,7 +1364,7 @@ def ddp_train_nerf(gpu, args):
                     logger.add_scalar('eval/coarse_psnr', psnr0, global_step=i)
 
                     avg_psnr = (psnr + psnr0) / 2
-                    logger.add_scalar('eval/avg_psnr', avg_pxsnr, global_step=i)
+                    logger.add_scalar('eval/avg_psnr', avg_psnr, global_step=i)
 
                 rgb, _, _, _, _, extras = render(1, 1, 1, 0, chunk=args.chunk, rays=batch_rays_test,
                                                  verbose=i < 10, retraw=True, H_train=HH, **render_kwargs_test)
