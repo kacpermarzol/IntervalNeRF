@@ -177,7 +177,7 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
     return rgbs, disps
 
 
-def create_nerf(args):
+def create_nerf(args, gpu):
     """Instantiate NeRF's MLP model.
     """
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
@@ -295,11 +295,13 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
 
     alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
     # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
-    weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
+    t1 = torch.ones((alpha.shape[0], 1)).to(alpha.device)
+    weights = alpha * torch.cumprod(torch.cat([t1, 1. - alpha + 1e-10], -1), -1)[:, :-1]
     rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
 
     depth_map = torch.sum(weights * z_vals, -1)
-    disp_map = 1. / torch.max(1e-10 * torch.ones_like(depth_map), depth_map / torch.sum(weights, -1))
+    t1_2 = torch.ones_like(depth_map).to(alpha.device)
+    disp_map = 1. / torch.max(1e-10 * t1_2, depth_map / torch.sum(weights, -1))
     acc_map = torch.sum(weights, -1)
 
     if white_bkgd:
@@ -539,7 +541,6 @@ def config_parser():
 def train():
     parser = config_parser()
     args = parser.parse_args()
-    logger = tb.SummaryWriter(log_dir=f"runs/{args.expname}")
 
     # Load data
     K = None
@@ -681,6 +682,14 @@ def train():
 
     # Create nerf model
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
+    ##### important!!!
+    # make sure different processes sample different rays
+    np.random.seed((rank + 1) * 777)
+    # make sure different processes have different perturbations in depth samples
+    torch.manual_seed((rank + 1) * 777)
+
+    ##### only main process should do the logging
+
     global_step = start
 
     bds_dict = {

@@ -205,7 +205,9 @@ def sample_pdf(bins, weights, N_samples, det=False, pytest=False):
 
     # Take uniform samples
     if det:
+        print('  det   ')
         u = torch.linspace(0., 1., steps=N_samples)
+        print(u.device)
         u = u.expand(list(cdf.shape[:-1]) + [N_samples])
     else:
         u = torch.rand(list(cdf.shape[:-1]) + [N_samples])

@@ -1,4 +1,6 @@
 import os, sys
+import torch.distributed as dist
+
 import numpy as np
 import imageio
 import json
@@ -18,6 +20,7 @@ from load_llff import load_llff_data
 from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_LINEMOD import load_LINEMOD_data
+from torch.nn.parallel import DistributedDataParallel as DDP
 from load_multiscale import load_multiscale_data
 
 # from functools import partialmethod
@@ -209,8 +212,18 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, eps, gt_imgs=None, s
 
     return rgbs, disps
 
+def setup(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    # port = np.random.randint(12355, 12399)
+    # os.environ['MASTER_PORT'] = '{}'.format(port)
+    os.environ['MASTER_PORT'] = '12355'
+    # initialize the process group
+    torch.distributed.init_process_group("nccl", rank=rank, world_size=world_size)
 
-def create_nerf(args):
+def cleanup():
+    torch.distributed.destroy_process_group()
+
+def create_nerf(args, gpu, rank):
     """Instantiate NeRF's MLP model.
     """
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
@@ -223,15 +236,21 @@ def create_nerf(args):
     skips = [4]
     model = NeRF(D=args.netdepth, W=args.netwidth,
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
-                 input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
-    grad_vars = list(model.parameters())
+                 input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs)
+    model = model.to(gpu)
+    ddp_model = DDP(model, device_ids=[gpu])
+    model= ddp_model.module
+    grad_vars = list(ddp_model.parameters())
 
     model_fine = None
     if args.N_importance > 0:
         model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
                           input_ch=input_ch, output_ch=output_ch, skips=skips,
-                          input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
-        grad_vars += list(model_fine.parameters())
+                          input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs)
+        model_fine.to(gpu)
+        ddp_fine_model = DDP(model_fine, device_ids=[gpu])
+        model_fine = ddp_fine_model.module
+        grad_vars += list(ddp_fine_model.parameters())
 
     network_query_fn = lambda inputs, viewdirs, network_fn, eps: run_network(inputs, viewdirs, network_fn, eps,
                                                                              embed_fn=embed_fn,
@@ -239,7 +258,7 @@ def create_nerf(args):
                                                                              netchunk=args.netchunk)  ##Aded epsilon
 
     # Create optimizer
-    optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
+    optimizer = torch.optim.Adam(params=grad_vars, lr=args.lr_init, betas=(0.9, 0.999))
 
     start = 0
     basedir = args.basedir
@@ -254,11 +273,17 @@ def create_nerf(args):
         ckpts = [os.path.join(basedir, expname, f) for f in sorted(os.listdir(os.path.join(basedir, expname))) if
                  'tar' in f]
 
+        # dist.barrier()
+        # # configure map_location properly
+        # ddp_model.load_state_dict(
+        #     torch.load(CHECKPOINT_PATH, map_location=map_location))
+
     print('Found ckpts', ckpts)
     if len(ckpts) > 0 and not args.no_reload:
+        map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
         ckpt_path = ckpts[-1]
         print('Reloading from', ckpt_path)
-        ckpt = torch.load(ckpt_path)
+        ckpt = torch.load(ckpt_path, map_location=map_location)
 
         start = ckpt['global_step']
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
@@ -274,9 +299,9 @@ def create_nerf(args):
         'network_query_fn': network_query_fn,
         'perturb': args.perturb,
         'N_importance': args.N_importance,
-        'network_fine': model_fine,
+        'network_fine': ddp_fine_model,
         'N_samples': args.N_samples,
-        'network_fn': model,
+        'network_fn': ddp_model,
         'use_viewdirs': args.use_viewdirs,
         'white_bkgd': args.white_bkgd,
         'raw_noise_std': args.raw_noise_std,
@@ -311,7 +336,8 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     raw2alpha = lambda raw, dists, act_fn=F.softplus: 1. - torch.exp(-act_fn(raw) * dists)
 
     dists = z_vals[..., 1:] - z_vals[..., :-1]
-    dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[..., :1].shape)], -1)  # [N_rays, N_samples]
+    t1e10 = torch.Tensor([1e10]).to(dists.device)
+    dists = torch.cat([dists, t1e10.expand(dists[..., :1].shape)], -1)  # [N_rays, N_samples]
 
     dists = dists * torch.norm(rays_d[..., None, :], dim=-1)
 
@@ -328,11 +354,13 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
 
     alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
     # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
-    weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
+    t1 = torch.ones((alpha.shape[0], 1)).to(alpha.device)
+    weights = alpha * torch.cumprod(torch.cat([t1, 1. - alpha + 1e-10], -1), -1)[:, :-1]
     rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
 
     depth_map = torch.sum(weights * z_vals, -1)
-    disp_map = 1. / torch.max(1e-10 * torch.ones_like(depth_map), depth_map / torch.sum(weights, -1))
+    t1_2 = torch.ones_like(depth_map).to(alpha.device)
+    disp_map = 1. / torch.max(1e-10 * t1_2, depth_map / torch.sum(weights, -1))
     acc_map = torch.sum(weights, -1)
 
     if white_bkgd:
@@ -366,7 +394,8 @@ def raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std=0, white_
 
     dists = z_vals[..., 1:] - z_vals[..., :-1]  # the distances between adjacent samples
     # dists = torch.cat([dists, torch.full(dists[..., :1].shape, 1e10)], -1)  # changed second arg in torch cat
-    dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[..., :1].shape)], -1)  # [N_rays, N_samples]
+    t1e10 = torch.Tensor([1e10]).to(dists.device)
+    dists = torch.cat([dists, t1e10.expand(dists[..., :1].shape)], -1)  # [N_rays, N_samples]
 
     dists = dists * torch.norm(rays_d[..., None, :], dim=-1)
 
@@ -399,8 +428,10 @@ def raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std=0, white_
     # = exp(-s_1*d_1) * exp(-s_2*d_2) * ... * exp(-s_{i-1} * d_{i-1})) =
     # = (1-a_1) * (1-a_2) * ... * (1-a_{i-1})
 
-    T_left = torch.cumprod(torch.cat([torch.ones((alpha_left.shape[0], 1)), 1. - alpha_left + 1e-10], -1), -1)[:, :-1]
-    T_right = torch.cumprod(torch.cat([torch.ones((alpha_right.shape[0], 1)), 1. - alpha_right + 1e-10], -1), -1)[:,:-1]
+    t1 = torch.ones((alpha_left.shape[0], 1)).to(dists.device)
+    t1_2 = torch.ones((alpha_right.shape[0], 1)).to(dists.device)
+    T_left = torch.cumprod(torch.cat([t1, 1. - alpha_left + 1e-10], -1), -1)[:, :-1]
+    T_right = torch.cumprod(torch.cat([t1_2, 1. - alpha_right + 1e-10], -1), -1)[:,:-1]
 
     assert assert_all_nonnegative(alpha_left), "Not all elements are nonnegative (alpha_left)"
     assert assert_all_nonnegative(alpha_right), "Not all elements are nonnegative (alpha_right)"
@@ -494,7 +525,7 @@ def render_rays(ray_batch,
     bounds = torch.reshape(ray_batch[..., 6:8], [-1, 1, 2])
     near, far = bounds[..., 0], bounds[..., 1]  # [-1,1]
 
-    t_vals = torch.linspace(0., 1., steps=N_samples)
+    t_vals = torch.linspace(0., 1., steps=N_samples).to(near.device)
     if not lindisp:
         z_vals = near * (1. - t_vals) + far * (t_vals)
     else:
@@ -508,7 +539,7 @@ def render_rays(ray_batch,
         upper = torch.cat([mids, z_vals[..., -1:]], -1)
         lower = torch.cat([z_vals[..., :1], mids], -1)
         # stratified samples in those intervals
-        t_rand = torch.rand(z_vals.shape)
+        t_rand = torch.rand(z_vals.shape).to(near.device)
 
         # Pytest, overwrite u with numpy's fixed random numbers
         if pytest:
@@ -537,20 +568,28 @@ def render_rays(ray_batch,
     raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
 
     # get outputs from the basic nerf
-    rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu, z_vals, rays_d, raw_noise_std, white_bkgd,
+    rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu,
+                                                                 z_vals,
+                                                                 rays_d, raw_noise_std, white_bkgd,
                                                                  pytest=pytest)
 
     # get left and right ends of interval for rgb map
-    rgb_map_left, rgb_map_right = raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std, white_bkgd,
+    rgb_map_left, rgb_map_right = raw2outputs_eps(raw_left,
+                                                  raw_right,
+                                                  z_vals,
+                                                  rays_d, raw_noise_std, white_bkgd,
                                                   pytest=pytest)
 
-    rgb_map = rgb_map.to('cpu')
-    disp_map = disp_map.to('cpu')
-    acc_map = acc_map.to('cpu')
-    rgb_map_left = rgb_map_left.to('cpu')
-    rgb_map_right = rgb_map_right.to('cpu')
+    # rgb_map = rgb_map.to('cpu')
+    # disp_map = disp_map.to('cpu')
+    # acc_map = acc_map.to('cpu')
+    # rgb_map_left = rgb_map_left.to('cpu')
+    # rgb_map_right = rgb_map_right.to('cpu')
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> ddp
     if N_importance > 0:
         rgb_map_0, disp_map_0, acc_map_0, rgb_map_left_0, rgb_map_right_0 = rgb_map, disp_map, acc_map, rgb_map_left, rgb_map_right
 
@@ -583,20 +622,18 @@ def render_rays(ray_batch,
 
         raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
 
-        rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu, z_vals, rays_d, raw_noise_std, white_bkgd,
+        rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu,
+                                                                     z_vals,
+                                                                     rays_d, raw_noise_std, white_bkgd,
                                                                      pytest=pytest)
 
         del weights
 
-        rgb_map_left, rgb_map_right = raw2outputs_eps(raw_left, raw_right, z_vals, rays_d, raw_noise_std, white_bkgd,
+        rgb_map_left, rgb_map_right = raw2outputs_eps(raw_left,
+                                                      raw_right,
+                                                      z_vals,
+                                                      rays_d, raw_noise_std, white_bkgd,
                                                       pytest=pytest)
-
-    rgb_map= rgb_map.to('cpu')
-    disp_map = disp_map.to('cpu')
-    acc_map = acc_map.to('cpu')
-    rgb_map_left= rgb_map_left.to('cpu')
-    rgb_map_right= rgb_map_right.to('cpu')
-
 
 
     ret = {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map': acc_map, 'rgb_map_left': rgb_map_left,
@@ -642,10 +679,10 @@ def config_parser():
                         help='channels per layer in fine network')
     parser.add_argument("--N_rand", type=int, default=32 * 32 * 4,
                         help='batch size (number of random rays per gradient step)')
-    parser.add_argument("--lrate", type=float, default=5e-4,
-                        help='learning rate')
-    parser.add_argument("--lrate_decay", type=int, default=500,  ## to make lrate go from 5e-4 to 5e-6 as in papers
-                        help='exponential learning rate decay (in 1000 steps)')
+    # parser.add_argument("--lrate", type=float, default=5e-4,
+    #                     help='learning rate')
+    # parser.add_argument("--lrate_decay", type=int, default=500,  ## to make lrate go from 5e-4 to 5e-6 as in papers
+    #                     help='exponential learning rate decay (in 1000 steps)')
     parser.add_argument("--chunk", type=int, default=1024 * 32,
                         help='number of rays processed in parallel, decrease if running out of memory')
     parser.add_argument("--netchunk", type=int, default=1024 * 64,
@@ -682,7 +719,7 @@ def config_parser():
     parser.add_argument("--render_factor", type=int, default=0,
                         help='downsampling factor to speed up rendering, set 4 or 8 for fast preview')
 
-    # training options
+    # training options f
     parser.add_argument("--precrop_iters", type=int, default=0,
                         help='number of steps to train on central crops')
     parser.add_argument("--precrop_frac", type=float,
@@ -716,6 +753,17 @@ def config_parser():
     parser.add_argument("--llffhold", type=int, default=8,
                         help='will take every 1/N images as LLFF test set, paper uses 8')
 
+    # distributed training options
+    parser.add_argument('-n', '--nodes', default=1, type=int, metavar='N',
+                        help='number of data loading workers (default: 4)')
+    parser.add_argument('-g', '--gpus', default="", type=str,
+                        help='number of gpus of each node')
+    parser.add_argument('-i', '--id', default=0, type=int,
+                        help='the id of the node which is determined by the correponding index in the gpu list')
+    # multiprocess learning
+    parser.add_argument("--world_size", type=int, default='-1',
+                        help='number of processes')
+
     # logging/saving options
     parser.add_argument("--i_print", type=int, default=1000000,
                         help='frequency of console printout and metric loggin')
@@ -728,7 +776,6 @@ def config_parser():
     parser.add_argument("--i_video", type=int, default=1000000,  ###!!!
                         help='frequency of render_poses video saving')
 
-    ### Added eps argument for IntervalNeRF
     parser.add_argument("--eps", type=float, default=0.0,
                         help=' todo ')
 
@@ -736,16 +783,52 @@ def config_parser():
     parser.add_argument("--metrics_only", type=bool, default=False)
     parser.add_argument("--log_every", type=int, default=10, help="The number of steps to log into tensorboard")
 
+<<<<<<< HEAD
+=======
+    parser.add_argument("--lr_init", type=float, default=5e-4)
+    parser.add_argument("--lr_final", type=float, default=5e-6)
+    parser.add_argument("--lr_delay_steps", type=int, default=2500)
+    parser.add_argument("--lr_delay_mult", type=float, default=0.1)
+    parser.add_argument("--weight_decay", type=float, default=1e-5)
+>>>>>>> ddp
 
 
 
     return parser
 
+def ddp_train_nerf(gpu, args):
+    ###### set up multi-processing
+    gpu_list = [int(gpu) for gpu in args.gpus.split(',')]
+    rank = sum(gpu_list[:args.id]) + gpu
+    dist.init_process_group(backend='gloo', init_method='env://', world_size=args.world_size, rank=rank)
+    ###### set up logger
+    logger = None
+    if rank == 0:
+        logger = tb.SummaryWriter(os.path.join(args.basedir, 'summaries', args.expname))
+        basedir = args.basedir
+        expname = args.expname
+        os.makedirs(os.path.join(basedir, expname), exist_ok=True)
+        f = os.path.join(basedir, expname, 'args.txt')
+        with open(f, 'w') as file:
+            for arg in sorted(vars(args)):
+                attr = getattr(args, arg)
+                file.write('{} = {}\n'.format(arg, attr))
+        if args.config is not None:
+            f = os.path.join(basedir, expname, 'config.txt')
+            with open(f, 'w') as file:
+                file.write(open(args.config, 'r').read())
 
-def train():
-    parser = config_parser()
-    args = parser.parse_args()
-    logger = tb.SummaryWriter(log_dir=f"runs/{args.expname}")
+    ###### decide chunk size according to gpu memory
+    #logger.info('gpu_mem: {}'.format(torch.cuda.get_device_properties(rank).total_memory))
+    # if torch.cuda.get_device_properties(gpu).total_memory / 1e9 > 14:
+    #     #logger.info('setting batch size according to 24G gpu')
+    #     args.N_rand = 1024
+    #     args.chunk_size = 8192
+    # else:
+    #     #logger.info('setting batch size according to 12G gpu')
+    #     args.N_rand = 512
+    #     args.chunk_size = 4096
+
     # Load data
     K = None
 
@@ -827,8 +910,7 @@ def train():
         print('Unknown dataset type', args.dataset_type, 'exiting')
         return
 
-
-    #for generating videos with different resoultions
+    # for generating videos with different resoultions
     H, W, focal = hwf
     H_test, W_test, focal_test = H[0], W[0], focal[0]
     hwf_800 = (H_test, W_test, focal_test)
@@ -862,21 +944,9 @@ def train():
     #     render_poses = np.array(poses[i_test])
 
     # Create log dir and copy the config file
-    basedir = args.basedir
-    expname = args.expname
-    os.makedirs(os.path.join(basedir, expname), exist_ok=True)
-    f = os.path.join(basedir, expname, 'args.txt')
-    with open(f, 'w') as file:
-        for arg in sorted(vars(args)):
-            attr = getattr(args, arg)
-            file.write('{} = {}\n'.format(arg, attr))
-    if args.config is not None:
-        f = os.path.join(basedir, expname, 'config.txt')
-        with open(f, 'w') as file:
-            file.write(open(args.config, 'r').read())
 
     # Create nerf model
-    render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
+    render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args, gpu, rank)
     global_step = start
 
     bds_dict = {
@@ -888,7 +958,6 @@ def train():
 
     # Move testing data to GPU
     # render_poses = torch.Tensor(render_poses).to(device)
-
 
     # Short circuit if only rendering out from trained model
     if args.render_only:
@@ -939,8 +1008,6 @@ def train():
         H_test = np.concatenate(
             [np.array(np.full((H[i] * W[i], 1), H[i])) for i in i_test]).flatten().reshape(-1, 1)
 
-
-
         print('done, concats')
 
         rays_rgb = []
@@ -974,7 +1041,6 @@ def train():
         # rays_rgb_test = np.array(rays_rgb_test, dtype=np.float32)
         print('shuffle rays')
 
-
         rand_idx = np.random.permutation(rays_rgb.shape[0])
 
         rays_rgb = rays_rgb[rand_idx]
@@ -989,6 +1055,10 @@ def train():
         i_batch = 0
         i_batch_test = 0
 
+<<<<<<< HEAD
+=======
+    # Move training data to GPU
+>>>>>>> ddp
     # if use_batching:
     poses = torch.from_numpy(poses)
     # images = torch.Tensor(images).to(device)
@@ -999,7 +1069,6 @@ def train():
         rays_rgb_test = torch.from_numpy(rays_rgb_test)
         rays_rgb = torch.from_numpy(rays_rgb)
         lossmult2 = torch.from_numpy(lossmult2)
-
 
     # Short circuit if only calculating metrics
     if args.metrics_only:
@@ -1013,45 +1082,60 @@ def train():
         psnr100eps0 = []
 
         print('METRICS ONLY')
+
+
         with torch.no_grad():
-            for i in i_test[0:200]:
-                print(i)
+            tensor10 = torch.log(torch.Tensor([10.])).to(gpu)
+
+            for it in trange(200):
+                i = i_test[it]
                 hh, ww, ff = H[i], W[i], focal[i]
+                HH = (torch.ones(hh ** 2, 1) * hh).to(gpu)
+
                 kk = np.array([[ff, 0, 0.5 * ww],
                                [0, ff, 0.5 * hh],
                                [0, 0, 1]])
+<<<<<<< HEAD
                 pose = poses[i, :3, :4].to(device)
 
                 rgb, _, _, _, _, _ = render(hh, ww, kk, eps=args.eps, H_train=hh, chunk=args.chunk, c2w=pose,
                                                 **render_kwargs_test)
                 rgb = rgb.view(hh, ww, 3)
+=======
+                # pose = poses[i, :3, :4]
+                pose = poses[i, :3, :4]
+                rays_o, rays_d = get_rays(hh, ww, kk, pose)
+                rays_o, rays_d = rays_o.to(gpu), rays_d.to(gpu)
+                rays = (rays_o, rays_d)
 
-                psnr = mse2psnr(img2mse(rgb, images[i]))
+                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=args.eps, rays=rays, H_train=HH, chunk=args.chunk, **render_kwargs_test)
+                rgb = rgb.view(hh, ww, 3).cpu()
+>>>>>>> ddp
 
+                loss = img2mse(rgb, images[i])
+                psnr = -10. * torch.log(loss) / tensor10
 
+                # psnr = mse2psnr(img2mse(rgb, images[i]))
 
                 # rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, H_train=hh, chunk=args.chunk, c2w=pose,
                 #                                 **render_kwargs_test)
                 # rgb = rgb.view(hh, ww, 3).cpu()
-                #
                 # psnr0 = mse2psnr(img2mse(rgb, images[i]))
 
-
-                if lossmult[i]==1:
+                if lossmult[i] == 1:
                     psnr800.append(psnr)
                     # psnr800eps0.append(psnr0)
-                elif lossmult[i]==4:
+                elif lossmult[i] == 4:
                     psnr400.append(psnr)
                     # psnr400eps0.append(psnr0)
-                elif lossmult[i]==16:
+                elif lossmult[i] == 16:
                     psnr200.append(psnr)
                     # psnr200eps0.append(psnr0)
-                elif lossmult[i]==64:
+                elif lossmult[i] == 64:
                     psnr100.append(psnr)
                     # psnr100eps0.append(psnr0)
                 else:
                     print("something went wrong")
-
 
             print("_-_-_-_-_-_-_-_")
             print("PSNR")
@@ -1072,31 +1156,37 @@ def train():
 
             return
 
-
-    N_iters = 1000001 + 1
+    N_iters = 500001 + 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
     print('VAL views are', i_val)
 
+    # make sure different processes sample different rays
+    np.random.seed((gpu + 1) * 777)
+    # make sure different processes have different perturbations in depth samples
+    torch.manual_seed((gpu + 1) * 777)
+
     epsilon = args.eps
     start = start + 1
-    new_lrate = args.lrate
+    new_lrate = args.lr_init
     for i in trange(start, N_iters):
         time0 = time.time()
 
         # Sample random ray batch
         if use_batching:
             # Random over all images
-            batch = rays_rgb[i_batch:i_batch + N_rand] # [B, 2+1, 3*?]
-            mask = lossmult2[i_batch:i_batch + N_rand]
-            HH = H_train[i_batch: i_batch + N_rand].to(device)
+            # use to partition data
+
+            batch = rays_rgb[i_batch:i_batch + N_rand].to(gpu)  # [B, 2+1, 3*?]
+            mask = lossmult2[i_batch:i_batch + N_rand].to(gpu)
+            HH = H_train[i_batch: i_batch + N_rand].to(gpu)
             # for making the loss like in MipNeRF:
             # "loss of each pixel by the area
             # of that pixel’s footprint in the original image (the loss for pixels f12rom the 1/4 images is scaled by 16, etc)
             # so that the few low-resolution pixels have comparable influence to the many high-resolution pixels. "
             batch = torch.transpose(batch, 0, 1)
-            batch_rays, target_s = batch[:2].to(device), batch[2]
+            batch_rays, target_s = batch[:2], batch[2]
 
             i_batch += N_rand
             if i_batch >= rays_rgb.shape[0]:
@@ -1107,6 +1197,14 @@ def train():
                 H_train = H_train[rand_idx]
                 i_batch = 0
 
+            partitions = list(range(0, batch_rays.shape[1], int(batch_rays.shape[1] / (args.world_size))))
+            partitions.append(batch_rays.shape[1])
+
+            batch_rays_ddp = batch_rays[:, partitions[rank]: partitions[rank + 1]]
+            HH_ddp = HH[partitions[rank]: partitions[rank + 1]]
+            mask_ddp = mask[partitions[rank]: partitions[rank + 1]]
+            target_s_ddp = target_s[partitions[rank]: partitions[rank + 1]]
+
         else:
             print("not implemented")
 
@@ -1116,6 +1214,8 @@ def train():
         # with warmup
         #
         # if i < 200000:
+<<<<<<< HEAD
+=======
         #     eps = 0
         # elif i < 250000:
         #     eps = ((i - 199999) / 50000) * epsilon
@@ -1129,6 +1229,22 @@ def train():
         # else:
         #     kappa = 0.5
 
+        # if i < 100000:
+>>>>>>> ddp
+        #     eps = 0
+        # elif i < 250000:
+        #     eps = ((i - 199999) / 50000) * epsilon
+        # else:
+        #     eps = epsilon
+        #
+        # if i < 200000:
+        #     kappa = 1
+        # elif i < 300000:
+        #     kappa = max(1 - 0.000005 * (i - 199999), 0.5)
+        # else:
+        #     kappa = 0.5
+
+<<<<<<< HEAD
         if i < 100000:
             eps = 0
         elif i < 150000:
@@ -1147,44 +1263,74 @@ def train():
         #
         # if i < 50000:
         #     eps = (i / 50000) * epsilon
+=======
+
+        #batch4096
+        # if i < 60000:
+        #     eps = 0
+        # elif i < 160000:
+        #     eps = ((i - 59999) / 100000) * epsilon
+>>>>>>> ddp
         # else:
         #     eps = epsilon
         #
-        # if i < 100000:
-        #     kappa = max(1 - 0.000005 * i, 0.5)
+        # if i < 60000:
+        #     kappa = 1
+        # elif i < 160000:
+        #     kappa = max(1 - 0.000005 * (i - 59999), 0.5)
         # else:
         #     kappa = 0.5
 
+        # without warmup
 
-        rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays,
-                                                                     verbose=i < 10, retraw=True, H_train = HH,
+        if i < 50000:
+            eps = (i / 50000) * epsilon
+        else:
+            eps = epsilon
+
+        if i < 100000:
+            kappa = max(1 - 0.000005 * i, 0.5)
+        else:
+            kappa = 0.5
+
+        rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_ddp,
+                                                                     verbose=i < 10, retraw=True, H_train=HH_ddp,
                                                                      **render_kwargs_train)
-
         # rgb = rgb.to('cpu')
         # rgb_map_left, rgb_map_right = rgb_map_left.to('cpu'), rgb_map_right.to('cpu')
 
-        if i % 1000 == 0:
-            print("target : ", target_s[0:3])
+        if i % 5000 == 0:
+            print("target : ", target_s_ddp[0:3])
             print("rgb : ", rgb[0:3])
             print("rgb_left : ", rgb_map_left[0:3])
             print("rgb_right : ", rgb_map_right[0:3], '\n')
 
-        optimizer.zero_grad()
         # loss_fit = img2mse(rgb, target_s)
-        loss_fit = img2mse2(rgb, target_s, mask)
+        loss_fit = img2mse2(rgb, target_s_ddp, mask_ddp)
         # loss_spec = interval_loss(target_s, rgb_map_left, rgb_map_right)
-        loss_spec = interval_loss2(target_s, rgb_map_left, rgb_map_right, mask)
+        loss_spec = interval_loss2(target_s_ddp, rgb_map_left, rgb_map_right, mask_ddp)
 
+<<<<<<< HEAD
 
+=======
+        # psnr = mse2psnr(loss_fit)
+>>>>>>> ddp
 
-        psnr = mse2psnr(loss_fit)
+        tensor10 = torch.log(torch.Tensor([10.])).to(gpu)
+        psnr = -10. * torch.log(loss_fit) / tensor10
 
+<<<<<<< HEAD
 
+=======
+        # if logger is not None:
+        #     logger.add_scalar('train/fine_psnr', psnr, global_step=i)
+>>>>>>> ddp
 
         if 'rgb0' in extras:
             # img_loss0 = img2mse(extras['rgb0'], target_s)
-            img_loss0 = img2mse2(extras['rgb0'], target_s, mask)
+            img_loss0 = img2mse2(extras['rgb0'], target_s_ddp, mask_ddp)
             # loss_spec0 = interval_loss(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'])
+<<<<<<< HEAD
             loss_spec0 = interval_loss2(target_s, extras['rgb_map_left0'], extras['rgb_map_right0'], mask)
 
             psnr0 = mse2psnr(img_loss0)
@@ -1199,13 +1345,26 @@ def train():
         logpsnr = (psnr.item() + psnr0.item()) / 2
 
 
+=======
+            loss_spec0 = interval_loss2(target_s_ddp, extras['rgb_map_left0'], extras['rgb_map_right0'], mask_ddp)
+            psnr0 = -10. * torch.log(img_loss0) / tensor10
+            loss_fit_final = loss_fit + img_loss0
+            loss_spec_final = loss_spec + loss_spec0
+
+        loss = kappa * loss_fit_final + (1 - kappa) * loss_spec_final
+        logpsnr = (psnr.item() + psnr0.item()) / 2
+>>>>>>> ddp
 
         loss.backward()
         optimizer.step()
 
+<<<<<<< HEAD
 
         #loggers
         if i % args.log_every == 0:
+=======
+        if logger is not None and i % args.log_every == 0:
+>>>>>>> ddp
             logger.add_scalar('losses/loss_fit', loss_fit.item(), global_step=i)
             logger.add_scalar('losses/loss_spec', loss_spec.item(), global_step=i)
             logger.add_scalar('train/fine_psnr', psnr, global_step=i)
@@ -1217,15 +1376,40 @@ def train():
             logger.add_scalar('train/lr', new_lrate, global_step=i)
 
 
+<<<<<<< HEAD
         # NOTE: IMPORTANT!
         ###   update learning rate   ###
 
         decay_rate = 0.1
         decay_steps = args.lrate_decay * 1000
         new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
+=======
+        dist.all_reduce(loss, op=dist.ReduceOp.SUM)
+        loss /= args.world_size
+        optimizer.zero_grad()
+
+        # if logger is not None:
+        #     logger.add_scalar('train/loss', float(loss.detach().cpu().numpy()), global_step=i)
+        #     logger.add_scalar('train/avg_psnr', logpsnr, global_step=i)
+        #     logger.add_scalar('train/lr', new_lrate, global_step=i)
+
+
+        # NOTE: IMPORTANT!
+        ###   update learning rate   ###
+
+
+        step = i
+        if args.lr_delay_steps > 0:
+            delay_rate = args.lr_delay_mult + (1 - args.lr_delay_mult) * np.sin(
+                0.5 * np.pi * np.clip(step/ args.lr_delay_steps, 0, 1))
+        else:
+            delay_rate = 1.
+        t = np.clip(step / N_iters, 0, 1)
+        log_lerp = np.exp(np.log(args.lr_init) * (1 - t) + np.log(args.lr_final) * t)
+        new_lrate = delay_rate * log_lerp
+>>>>>>> ddp
         for param_group in optimizer.param_groups:
             param_group['lr'] = new_lrate
-
 
         # decay_rate = 0.1
         # decay_steps = args.lrate_decay * 1000
@@ -1241,57 +1425,73 @@ def train():
         # print(f"Step: {global_step}, Loss: {loss}, Time: {dt}")
         #####           end            #####
 
+<<<<<<< HEAD
         if i % args.save_every == 0:
             batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand]  # [B, 2+1, 3*?]
             HH = H_test[i_batch_test : i_batch_test + N_rand].to(device)
+=======
+        if i % args.save_every == 0 and rank == 0:
+            batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand].to(gpu)  # [B, 2+1, 3*?]
+            HH = H_test[i_batch_test: i_batch_test + N_rand].to(gpu)
+>>>>>>> ddp
             i_batch_test += N_rand
             batch_test = torch.transpose(batch_test, 0, 1)
             batch_rays_test, target_s_test = batch_test[:2].to(device), batch_test[2]
             with torch.no_grad():
                 rgb, _, _, _, _, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_test,
+<<<<<<< HEAD
                                                  verbose=i < 10, retraw=True, H_train = HH, **render_kwargs_test)
 
+=======
+                                                 verbose=i < 10, retraw=True, H_train=HH, **render_kwargs_test)
+>>>>>>> ddp
                 loss_fit = img2mse(rgb, target_s_test)
-                psnr = mse2psnr(loss_fit)
-                logger.add_scalar('eval/fine_psnr', psnr, global_step=i)
+                # psnr = mse2psnr(loss_fit)
+                psnr = -10. * torch.log(loss_fit) / tensor10
 
+                logger.add_scalar('eval/fine_psnr', psnr, global_step=i)
 
                 if 'rgb0' in extras:
                     img_loss0 = img2mse(extras['rgb0'], target_s_test)
-                    psnr0 = mse2psnr(img_loss0)
+                    # psnr0 = mse2psnr(img_loss0)
+                    psnr0 = -10. * torch.log(img_loss0) / tensor10
                     logger.add_scalar('eval/coarse_psnr', psnr0, global_step=i)
 
                     avg_psnr = (psnr + psnr0) / 2
                     logger.add_scalar('eval/avg_psnr', avg_psnr, global_step=i)
 
                 rgb, _, _, _, _, extras = render(1, 1, 1, 0, chunk=args.chunk, rays=batch_rays_test,
-                                                 verbose=i < 10, retraw=True, H_train = HH, **render_kwargs_test)
-
+                                                 verbose=i < 10, retraw=True, H_train=HH, **render_kwargs_test)
 
                 loss_fit = img2mse(rgb, target_s_test)
-                psnr = mse2psnr(loss_fit)
+                # psnr = mse2psnr(loss_fit)
+                psnr = -10. * torch.log(loss_fit) / tensor10
+
                 logger.add_scalar('eval/fine_psnr_eps0', psnr, global_step=i)
 
                 if 'rgb0' in extras:
                     img_loss0 = img2mse(extras['rgb0'], target_s_test)
-                    psnr0 = mse2psnr(img_loss0)
+                    # psnr0 = mse2psnr(img_loss0)
+                    psnr = -10. * torch.log(img_loss0) / tensor10
                     logger.add_scalar('eval/coarse_psnr_eps0', psnr0, global_step=i)
 
                     avg_psnr = (psnr + psnr0) / 2
                     logger.add_scalar('eval/avg_psnr_eps0', avg_psnr, global_step=i)
 
         # Rest is logging
-        if i % args.i_weights == 0:
+        if i % args.i_weights == 0 and rank == 0:
             path = os.path.join(basedir, expname, '{:06d}.tar'.format(i))
+            network_fn_save = render_kwargs_train['network_fn'].module
+            network_fine_save = render_kwargs_train['network_fine'].module
             torch.save({
                 'global_step': global_step,
-                'network_fn_state_dict': render_kwargs_train['network_fn'].state_dict(),
-                'network_fine_state_dict': render_kwargs_train['network_fine'].state_dict(),
+                'network_fn_state_dict': network_fn_save.state_dict(),
+                'network_fine_state_dict': network_fine_save.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
             }, path)
             print('Saved checkpoints at', path)
 
-        if i % args.i_video == 0 and i > 0:
+        if i % args.i_video == 0 and i > 0 and rank == 0:
             # Turn on testing mode
             with torch.no_grad():
                 rgbs800, disps800 = render_path(render_poses, hwf_800, K_800, args.chunk, render_kwargs_test, epsilon)
@@ -1325,23 +1525,34 @@ def train():
         #                     gt_imgs=images[i_test], savedir=testsavedir)
         #     print('Saved test set')
 
-        if i % args.i_img == 0:
+        if i % args.i_img == 0 and rank == 0:
             img_i = i_val[45]
             hh, ww, ff = H[img_i], W[img_i], focal[img_i]
             kk = np.array([[ff, 0, 0.5 * ww],
                            [0, ff, 0.5 * hh],
                            [0, 0, 1]])
 
+<<<<<<< HEAD
             HH = (torch.ones(hh**2, 1) * hh).to(device)
             pose = poses[img_i, :3, :4].to(device)
+=======
+
+            HH = (torch.ones(hh ** 2, 1) * hh).to(gpu)
+            pose = poses[img_i, :3, :4]
+            rays_o, rays_d = get_rays(hh, ww, kk, pose)
+            rays_o, rays_d =rays_o.to(gpu), rays_d.to(gpu)
+            rays = (rays_o, rays_d)
+
+>>>>>>> ddp
             with torch.no_grad():
                 rgb, _, _, _, _, _ = \
-                    render(hh, ww, kk, eps=eps, chunk=args.chunk, c2w=pose, H_train = HH,
-                                            **render_kwargs_test)
+                    render(hh, ww, kk, eps=eps, chunk=args.chunk, rays=rays, H_train=HH,
+                           **render_kwargs_test)
 
                 rgb = rgb.view(hh, ww, 3)
                 logger.add_image('image', rgb, dataformats='HWC', global_step=i)
 
+<<<<<<< HEAD
                 # rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose, H_train = HH,
                 #                             **render_kwargs_test)
                 # rgb = rgb.view(hh, ww, 3)
@@ -1349,6 +1560,15 @@ def train():
                 # logger.add_image('image_eps0', rgb, dataformats='HWC', global_step=i)
 
         if i % args.i_print == 0:
+=======
+                # rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, chunk=args.chunk, c2w=pose, H_train=HH,
+                #                             **render_kwargs_test)
+                # rgb = rgb.view(hh, ww, 3)
+                #
+                # #logger.add_image('image_eps0', rgb, dataformats='HWC', global_step=i)
+
+        if i % args.i_print == 0 and rank == 0:
+>>>>>>> ddp
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {logpsnr}")
         """
             print(expname, i, psnr.numpy(), loss.numpy(), global_step.numpy())
@@ -1394,6 +1614,25 @@ def train():
 
         global_step += 1
     logger.close()
+
+
+def train():
+    parser = config_parser()
+    args = parser.parse_args()
+    gpu_list = [int(gpu) for gpu in args.gpus.split(',')]
+    args.world_size = sum(gpu_list)
+    print('world size')
+    print(args.world_size)
+    print("This code is running. Check your master IP address if you see nothing after a while.")
+    # This is the master node's IP
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = "29610"
+        #logger.log('Using # gpus: {}'.format(args.world_size))
+
+    torch.multiprocessing.spawn(ddp_train_nerf,
+                                args=(args,),
+                                nprocs=gpu_list[args.id],
+                                )
 
 
 if __name__ == '__main__':
