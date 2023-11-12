@@ -89,7 +89,7 @@ def batchify_rays(rays_flat, eps, chunk=1024 * 32, **kwargs):
     return all_ret
 
 
-def render(H, W, K, eps, chunk=1024 * 32, rays=None, H_train=None, c2w=None, ndc=True,
+def render(H, W, K, eps, chunk=1024 * 32, rays=None, radii=None, c2w=None, ndc=True,
            near=0., far=1.,
            use_viewdirs=False, c2w_staticcam=None,
            **kwargs):
@@ -125,19 +125,6 @@ def render(H, W, K, eps, chunk=1024 * 32, rays=None, H_train=None, c2w=None, ndc
     rays_o = torch.reshape(rays_o, [-1, 3]).float()
     rays_d = torch.reshape(rays_d, [-1, 3]).float()
 
-
-
-
-    dx = [
-        np.sqrt(np.sum((v[:-1, :, :] - v[1:, :, :]) ** 2, -1)) for v in rays_d
-    ]
-    dx = [np.concatenate([v, v[-2:-1, :]], 0) for v in dx]
-    # Cut the distance in half, and then round it out so that it's
-    # halfway between inscribed by / circumscribed about the pixel.
-    radii = [v[..., None] * 2 / np.sqrt(12) for v in dx]
-
-
-
     if use_viewdirs:
         # provide ray directions as input
         viewdirs = rays_d
@@ -146,16 +133,17 @@ def render(H, W, K, eps, chunk=1024 * 32, rays=None, H_train=None, c2w=None, ndc
         if c2w_staticcam is not None:
             # special case to visualize effect of viewdirs
             rays_o, rays_d = get_rays(H, W, K, c2w_staticcam)
-        viewdirs = viewdirs / torch.norm(viewdirs, dim=-1, keepdim=True)
+        viewdirs = viewdirs / distances
         viewdirs = torch.reshape(viewdirs, [-1, 3]).float()
 
 
 
     # if H_train is not None:
-    pixel = radii
-    # pixel = 1 / H_train
+    #     pixel = 1 / H_train
     #     if np.shape(H_train) == ():
     #         pixel = torch.ones_like(distances) * pixel
+
+
 
     sh = rays_d.shape  # [..., 3]
     if ndc:
@@ -170,7 +158,7 @@ def render(H, W, K, eps, chunk=1024 * 32, rays=None, H_train=None, c2w=None, ndc
         # if c2w is not None:
         #     rays = torch.cat([rays, viewdirs], -1)
         # else:
-        rays = torch.cat([rays, viewdirs, distances, pixel], -1)
+        rays = torch.cat([rays, viewdirs, torch.tensor(distances), torch.tensor(radii)], -1)
 
     # Render and reshape
     all_ret = batchify_rays(rays, eps, chunk, **kwargs)
@@ -533,7 +521,7 @@ def render_rays(ray_batch,
     rays_o, rays_d = ray_batch[:, 0:3], ray_batch[:, 3:6]  # [N_rays, 3] each
     viewdirs = ray_batch[:, 8 : 11] if ray_batch.shape[-1] > 8 else None
     distances = ray_batch[:, -2] if ray_batch.shape[-1] > 10 else None
-    pixel = ray_batch[:, -1] if ray_batch.shape[-1]>10 else None
+    radii = ray_batch[:, -1] if ray_batch.shape[-1]>10 else None
 
     bounds = torch.reshape(ray_batch[..., 6:8], [-1, 1, 2])
     near, far = bounds[..., 0], bounds[..., 1]  # [-1,1]
@@ -565,25 +553,34 @@ def render_rays(ray_batch,
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
     if distances is not None:
-        distances1 = distances.unsqueeze(1).repeat(1, N_samples)
-        rays_origins = rays_o.unsqueeze(1).repeat(1, N_samples, 1)
-        distances2 = torch.norm(pts - rays_origins, p=2, dim=-1)
-        pixel_ = pixel.unsqueeze(1).repeat(1, N_samples)
+        # distances1 = distances.unsqueeze(1).repeat(1, N_samples)
+        # rays_origins = rays_o.unsqueeze(1).repeat(1, N_samples, 1)
 
-        pre_eps = ((pixel_*distances2)/distances1).reshape(-1,1)
-        eps = (pre_eps * epsilon).to(torch.float32)
+        distances1 = distances.unsqueeze(1).unsqueeze(2)
+        rays_origins = rays_o.unsqueeze(1).broadcast_to(N_rays, N_samples, 3)
+        radii_ = radii.unsqueeze(1).unsqueeze(2)
+
+        distances2 = torch.norm(pts - rays_origins, p=2, dim=-1).unsqueeze(2)
+        # radii_ = radii.unsqueeze(1).repeat(1, N_samples)
+
+        pre_eps = ((radii_ * distances2) / distances1)
+        eps = (epsilon * pre_eps).to(torch.float32)
+
+        # eps = (pre_eps * epsilon).to(torch.float32)
+        # eps = eps.unsqueeze(-1).expand(N_rays, N_samples, 3)
+
     else:
-        eps = epsilon * torch.ones(N_rays * N_samples, 1)
-    #
+        print("Oh no")
+
+
+
     raw_mu, raw_eps = network_query_fn(pts, viewdirs, network_fn, eps)
 
     # raw_eps[:, :, -1] = 0
     raw_left, raw_right = raw_mu - raw_eps, raw_mu + raw_eps
 
     # get outputs from the basic nerf
-    rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu,
-                                                                 z_vals,
-                                                                 rays_d, raw_noise_std, white_bkgd,
+    rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw_mu, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                                  pytest=pytest)
 
     # get left and right ends of interval for rgb map
@@ -607,23 +604,22 @@ def render_rays(ray_batch,
         z_samples = z_samples.detach()
 
         del weights
-
         z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
 
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :,
                                                             None]  # [N_rays, N_samples + N_importance, 3]
 
         if distances is not None:
-            distances1 = distances.unsqueeze(1).repeat(1, N_importance + N_samples)
-            rays_origins = rays_o.unsqueeze(1).repeat(1, N_importance + N_samples, 1)
-            distances2 = torch.norm(pts - rays_origins, p=2, dim=-1)
+            distances1 = distances.unsqueeze(1).unsqueeze(2)
+            rays_origins = rays_o.unsqueeze(1).broadcast_to(N_rays, N_importance + N_samples, 3)
+            radii_ = radii.unsqueeze(1).unsqueeze(2)
+            distances2 = torch.norm(pts - rays_origins, p=2, dim=-1).unsqueeze(2)
 
-            pixel_ = pixel.unsqueeze(1).repeat(1, N_importance + N_samples)
-
-            pre_eps = ((pixel_ * distances2) / distances1).reshape(-1, 1)
-            eps = (pre_eps * epsilon).to(torch.float32)
+            pre_eps = (radii_ * distances2) / distances1
+            eps = (epsilon * pre_eps).to(torch.float32)
         else:
-            eps = epsilon * torch.ones(N_rays * (N_samples + N_importance), 1)
+            print("oh no")
+
 
         run_fn = network_fn if network_fine is None else network_fine
 
@@ -692,9 +688,9 @@ def config_parser():
     #                     help='learning rate')
     # parser.add_argument("--lrate_decay", type=int, default=500,  ## to make lrate go from 5e-4 to 5e-6 as in papers
     #                     help='exponential learning rate decay (in 1000 steps)')
-    parser.add_argument("--chunk", type=int, default=1024 * 32,
+    parser.add_argument("--chunk", type=int, default=1024 * 16,
                         help='number of rays processed in parallel, decrease if running out of memory')
-    parser.add_argument("--netchunk", type=int, default=1024 * 64,
+    parser.add_argument("--netchunk", type=int, default=1024 * 32,
                         help='number of pts sent through network in parallel, decrease if running out of memory')
     parser.add_argument("--no_batching", action='store_true',
                         help='only take random rays from 1 image at a time')
@@ -1007,11 +1003,38 @@ def ddp_train_nerf(gpu, args):
         lossmult2 = np.concatenate(
             [np.array(np.full((H[i] * W[i], 1), lossmult[i])) for i in i_train]).flatten().reshape(-1, 1)
 
-        H_train = np.concatenate(
-            [np.array(np.full((H[i] * W[i], 1), H[i])) for i in i_train]).flatten().reshape(-1, 1)
+        # H_train = np.concatenate(
+        #     [np.array(np.full((H[i] * W[i], 1), H[i])) for i in i_train]).flatten().reshape(-1, 1)
+        #
+        # H_test = np.concatenate(
+        #     [np.array(np.full((H[i] * W[i], 1), H[i])) for i in i_test]).flatten().reshape(-1, 1)
 
-        H_test = np.concatenate(
-            [np.array(np.full((H[i] * W[i], 1), H[i])) for i in i_test]).flatten().reshape(-1, 1)
+
+        dirs = np.array(rays, dtype=object)
+        dirs = dirs[:, 1]
+        dx = [
+            np.sqrt(np.sum((v[:-1, :, :] - v[1:, :, :]) ** 2, -1)) for v in dirs
+        ]
+        dx = [np.concatenate([v, v[-2:-1, :]], 0) for v in dx]
+        # Cut the distance in half, and then round it out so that it's
+        # halfway between inscribed by / circumscribed about the pixel.
+        radii_train = [v[..., None] * 2 / np.sqrt(12) for v in dx]
+        radii_train = (np.concatenate([subarray.flatten() for subarray in radii_train])).reshape(-1,1)
+
+
+        dirs = np.array(rays_test, dtype=object)
+        dirs = dirs[:, 1]
+        dx = [
+            np.sqrt(np.sum((v[:-1, :, :] - v[1:, :, :]) ** 2, -1)) for v in dirs
+        ]
+        dx = [np.concatenate([v, v[-2:-1, :]], 0) for v in dx]
+        # Cut the distance in half, and then round it out so that it's
+        # halfway between inscribed by / circumscribed about the pixel.
+
+        radii_test = [v[..., None] * 2 / np.sqrt(12) for v in dx]
+        radii_test = (np.concatenate([subarray.flatten() for subarray in radii_test])).reshape(-1,1)
+
+
 
         print('done, concats')
 
@@ -1046,16 +1069,19 @@ def ddp_train_nerf(gpu, args):
         # rays_rgb_test = np.array(rays_rgb_test, dtype=np.float32)
         print('shuffle rays')
 
+
         rand_idx = np.random.permutation(rays_rgb.shape[0])
 
         rays_rgb = rays_rgb[rand_idx]
         lossmult2 = lossmult2[rand_idx]
-        H_train = H_train[rand_idx]
+        radii_train = radii_train[rand_idx]
+        # H_train = H_train[rand_idx]
 
         rand_idx_test = np.random.permutation(
             5000000)  # assuming 1 milion iterations with batch size = 4096, this is enough
         rays_rgb_test = rays_rgb_test[rand_idx_test]
-        H_test = H_test[rand_idx_test]
+        radii_test = radii_test[rand_idx_test]
+        # H_test = H_test[rand_idx_test]
 
         i_batch = 0
         i_batch_test = 0
@@ -1067,11 +1093,14 @@ def ddp_train_nerf(gpu, args):
     # images = torch.Tensor(images).to(device)
 
     if use_batching:
-        H_test = torch.from_numpy(H_test)
-        H_train = torch.from_numpy(H_train)
+        # H_test = torch.from_numpy(H_test)
+        # H_train = torch.from_numpy(H_train)
         rays_rgb_test = torch.from_numpy(rays_rgb_test)
         rays_rgb = torch.from_numpy(rays_rgb)
         lossmult2 = torch.from_numpy(lossmult2)
+        radii_train = torch.from_numpy(radii_train)
+        radii_test = torch.from_numpy(radii_test)
+
 
     # Short circuit if only calculating metrics
     if args.metrics_only:
@@ -1093,29 +1122,45 @@ def ddp_train_nerf(gpu, args):
             for it in trange(200):
                 i = i_test[it]
                 hh, ww, ff = H[i], W[i], focal[i]
-                HH = (torch.ones(hh ** 2, 1) * hh).to(gpu)
+                # HH = (torch.ones(hh ** 2, 1) * hh).to(gpu)
 
                 kk = np.array([[ff, 0, 0.5 * ww],
                                [0, ff, 0.5 * hh],
                                [0, 0, 1]])
-                # pose = poses[i, :3, :4]
                 pose = poses[i, :3, :4]
+
+
                 rays_o, rays_d = get_rays(hh, ww, kk, pose)
+
+
+                dirs = np.array(rays_d)
+
+                # dirs = dirs[:, 1]
+                dx = np.sqrt(np.sum((dirs[:-1, :, :] - dirs[1:, :, :]) ** 2, -1))
+                dx = np.concatenate([dx, dx[-2:-1, :]], axis=0)
+
+                radii = [v[..., None] * 2 / np.sqrt(12) for v in dx]
+                radii = (np.concatenate([subarray.flatten() for subarray in radii])).reshape(-1, 1)
+
+                radii = torch.from_numpy(radii).to(gpu)
                 rays_o, rays_d = rays_o.to(gpu), rays_d.to(gpu)
                 rays = (rays_o, rays_d)
 
-                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=args.eps, rays=rays, H_train=HH, chunk=args.chunk, **render_kwargs_test)
-                rgb = rgb.view(hh, ww, 3).cpu()
+
+                rgb, _, _, _, _, _ = render(hh, ww, kk, eps=args.eps, rays=rays, radii = radii , chunk=args.chunk, **render_kwargs_test)
+                rgb = rgb.view(hh, ww, 3).to('cpu')
 
                 loss = img2mse(rgb, images[i])
                 psnr = -10. * torch.log(loss) / tensor10
 
                 # psnr = mse2psnr(img2mse(rgb, images[i]))
 
-                # rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0.0, H_train=hh, chunk=args.chunk, c2w=pose,
-                #                                 **render_kwargs_test)
-                # rgb = rgb.view(hh, ww, 3).cpu()
-                # psnr0 = mse2psnr(img2mse(rgb, images[i]))
+                # rgb, _, _, _, _, _ = render(hh, ww, kk, eps=0, rays=rays, radii=radii, chunk=args.chunk,
+                #                             **render_kwargs_test)
+                # rgb = rgb.view(hh, ww, 3).to('cpu')
+                #
+                # loss = img2mse(rgb, images[i])
+                # psnr0 = -10. * torch.log(loss) / tensor10
 
                 if lossmult[i] == 1:
                     psnr800.append(psnr)
@@ -1175,7 +1220,8 @@ def ddp_train_nerf(gpu, args):
 
             batch = rays_rgb[i_batch:i_batch + N_rand].to(gpu)  # [B, 2+1, 3*?]
             mask = lossmult2[i_batch:i_batch + N_rand].to(gpu)
-            HH = H_train[i_batch: i_batch + N_rand].to(gpu)
+            # HH = H_train[i_batch: i_batch + N_rand].to(gpu)
+            radii = radii_train[i_batch : i_batch + N_rand].to(gpu)
             # for making the loss like in MipNeRF:
             # "loss of each pixel by the area
             # of that pixel’s footprint in the original image (the loss for pixels f12rom the 1/4 images is scaled by 16, etc)
@@ -1189,14 +1235,15 @@ def ddp_train_nerf(gpu, args):
                 rand_idx = np.random.permutation(rays_rgb.shape[0])
                 rays_rgb = rays_rgb[rand_idx]
                 lossmult2 = lossmult2[rand_idx]
-                H_train = H_train[rand_idx]
+                radii_train = radii_train[rand_idx]
+                # H_train = H_train[rand_idx]
                 i_batch = 0
 
             partitions = list(range(0, batch_rays.shape[1], int(batch_rays.shape[1] / (args.world_size))))
             partitions.append(batch_rays.shape[1])
 
             batch_rays_ddp = batch_rays[:, partitions[rank]: partitions[rank + 1]]
-            HH_ddp = HH[partitions[rank]: partitions[rank + 1]]
+            # HH_ddp = HH[partitions[rank]: partitions[rank + 1]]
             mask_ddp = mask[partitions[rank]: partitions[rank + 1]]
             target_s_ddp = target_s[partitions[rank]: partitions[rank + 1]]
 
@@ -1285,7 +1332,7 @@ def ddp_train_nerf(gpu, args):
             kappa = 0.5
 
         rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_ddp,
-                                                                     verbose=i < 10, retraw=True, H_train=HH_ddp,
+                                                                     verbose=i < 10, retraw=True, radii=radii,
                                                                      **render_kwargs_train)
         # rgb = rgb.to('cpu')
         # rgb_map_left, rgb_map_right = rgb_map_left.to('cpu'), rgb_map_right.to('cpu')
@@ -1380,13 +1427,14 @@ def ddp_train_nerf(gpu, args):
 
         if i % args.save_every == 0 and rank == 0:
             batch_test = rays_rgb_test[i_batch_test:i_batch_test + N_rand].to(gpu)  # [B, 2+1, 3*?]
-            HH = H_test[i_batch_test: i_batch_test + N_rand].to(gpu)
+            # HH = H_test[i_batch_test: i_batch_test + N_rand].to(gpu)
+            radii_t = radii_test[i_batch_test : i_batch_test+ N_rand].to(gpu)
             i_batch_test += N_rand
             batch_test = torch.transpose(batch_test, 0, 1)
             batch_rays_test, target_s_test = batch_test[:2], batch_test[2]
             with torch.no_grad():
                 rgb, _, _, _, _, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_test,
-                                                 verbose=i < 10, retraw=True, H_train = HH, **render_kwargs_test)
+                                                 verbose=i < 10, retraw=True, radii=radii_t, **render_kwargs_test)
 
                 loss_fit = img2mse(rgb, target_s_test)
                 # psnr = mse2psnr(loss_fit)
@@ -1404,7 +1452,7 @@ def ddp_train_nerf(gpu, args):
                     logger.add_scalar('eval/avg_psnr', avg_psnr, global_step=i)
 
                 rgb, _, _, _, _, extras = render(1, 1, 1, 0, chunk=args.chunk, rays=batch_rays_test,
-                                                 verbose=i < 10, retraw=True, H_train=HH, **render_kwargs_test)
+                                                 verbose=i < 10, retraw=True, radii=radii_t, **render_kwargs_test)
 
                 loss_fit = img2mse(rgb, target_s_test)
                 # psnr = mse2psnr(loss_fit)
@@ -1415,7 +1463,7 @@ def ddp_train_nerf(gpu, args):
                 if 'rgb0' in extras:
                     img_loss0 = img2mse(extras['rgb0'], target_s_test)
                     # psnr0 = mse2psnr(img_loss0)
-                    psnr = -10. * torch.log(img_loss0) / tensor10
+                    psnr0 = -10. * torch.log(img_loss0) / tensor10
                     logger.add_scalar('eval/coarse_psnr_eps0', psnr0, global_step=i)
 
                     avg_psnr = (psnr + psnr0) / 2
@@ -1475,15 +1523,29 @@ def ddp_train_nerf(gpu, args):
                            [0, ff, 0.5 * hh],
                            [0, 0, 1]])
 
-            HH = (torch.ones(hh ** 2, 1) * hh).to(gpu)
+            # HH = (torch.ones(hh ** 2, 1) * hh).to(gpu)
+
             pose = poses[img_i, :3, :4]
             rays_o, rays_d = get_rays(hh, ww, kk, pose)
+
+            dirs = np.array(rays_d)
+
+            # dirs = dirs[:, 1]
+            dx = np.sqrt(np.sum((dirs[:-1, :, :] - dirs[1:, :, :]) ** 2, -1))
+            dx = np.concatenate([dx, dx[-2:-1, :]], axis=0)
+
+            # Cut the distance in half, and then round it out so that it's
+            # halfway between inscribed by / circumscribed about the pixel.
+            radii = [v[..., None] * 2 / np.sqrt(12) for v in dx]
+            radii = (np.concatenate([subarray.flatten() for subarray in radii])).reshape(-1, 1)
+
+            radii = torch.from_numpy(radii).to(gpu)
             rays_o, rays_d =rays_o.to(gpu), rays_d.to(gpu)
             rays = (rays_o, rays_d)
 
             with torch.no_grad():
                 rgb, _, _, _, _, _ = \
-                    render(hh, ww, kk, eps=eps, chunk=args.chunk, rays=rays, H_train=HH,
+                    render(hh, ww, kk, eps=eps, chunk=args.chunk, rays=rays, radii=radii,
                            **render_kwargs_test)
 
                 rgb = rgb.view(hh, ww, 3)
