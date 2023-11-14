@@ -565,6 +565,7 @@ def render_rays(ray_batch,
 
         pre_eps = ((radii_ * distances2) / distances1)
         eps = (epsilon * pre_eps).to(torch.float32)
+        eps = eps.reshape(eps.shape[0] * eps.shape[1], 1)
 
         # eps = (pre_eps * epsilon).to(torch.float32)
         # eps = eps.unsqueeze(-1).expand(N_rays, N_samples, 3)
@@ -617,6 +618,8 @@ def render_rays(ray_batch,
 
             pre_eps = (radii_ * distances2) / distances1
             eps = (epsilon * pre_eps).to(torch.float32)
+            eps = eps.reshape(eps.shape[0] * eps.shape[1], 1)
+
         else:
             print("oh no")
 
@@ -1284,19 +1287,19 @@ def ddp_train_nerf(gpu, args):
         # else:
         #     kappa = 0.5
 
-        # if i < 100000:
-        #     eps = 0
-        # elif i < 150000:
-        #     eps = ((i - 99999) / 50000) * epsilon
-        # else:
-        #     eps = epsilon
-        #
-        # if i < 100000:
-        #     kappa = 1
-        # elif i < 200000:
-        #     kappa = max(1 - 0.000005 * (i - 99999), 0.5)
-        # else:
-        #     kappa = 0.5
+        if i < 100000:
+            eps = 0
+        elif i < 150000:
+            eps = ((i - 99999) / 50000) * epsilon
+        else:
+            eps = epsilon
+
+        if i < 100000:
+            kappa = 1
+        elif i < 200000:
+            kappa = max(1 - 0.000005 * (i - 99999), 0.5)
+        else:
+            kappa = 0.5
 
         # without warmup
         #
@@ -1321,15 +1324,15 @@ def ddp_train_nerf(gpu, args):
 
         # without warmup
 
-        if i < 50000:
-            eps = (i / 50000) * epsilon
-        else:
-            eps = epsilon
-
-        if i < 100000:
-            kappa = max(1 - 0.000005 * i, 0.5)
-        else:
-            kappa = 0.5
+        # if i < 50000:
+        #     eps = (i / 50000) * epsilon
+        # else:
+        #     eps = epsilon
+        #
+        # if i < 100000:
+        #     kappa = max(1 - 0.000005 * i, 0.5)
+        # else:
+        #     kappa = 0.5
 
         rgb, disp, acc, rgb_map_left, rgb_map_right, extras = render(1, 1, 1, eps, chunk=args.chunk, rays=batch_rays_ddp,
                                                                      verbose=i < 10, retraw=True, radii=radii,

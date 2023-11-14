@@ -113,8 +113,11 @@ class NeRF(nn.Module):
 
     def forward(self, x, epsilon):
         input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
-        e0, e1 = epsilon.shape[0], epsilon.shape[1]
-        E = epsilon.reshape(e0 * e1, 1).repeat(1, input_pts.shape[-1])
+        # e0, e1 = epsilon.shape[0], epsilon.shape[1]
+        print("input", input_pts.shape)
+        print("epsilon", epsilon.shape)
+        E = epsilon.repeat(1, input_pts.shape[-1])
+        print("e" , E.shape)
         # E  = epsilon
 
         # print
@@ -149,7 +152,7 @@ class NeRF(nn.Module):
             eps = torch.abs(self.feature_linear.weight) @ eps
             # eps = torch.abs(self.feature_linear._parameters["weight"]) @ eps
 
-            E = epsilon.reshape(e0 * e1, 1).repeat(1, input_views.shape[-1])
+            E = epsilon.repeat(1, input_views.shape[-1])
 
             mu = torch.cat([mu, input_views.T], 0)
             eps = torch.cat([eps, E.T], 0)
